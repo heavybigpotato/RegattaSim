@@ -71,6 +71,22 @@ android {
     }
 }
 
+// Declared before `dependencies`, which is where it is used: the build script is
+// evaluated top to bottom, so a configuration referenced before it exists fails
+// with "Could not find method natives()" - and it fails during *configuration*,
+// which takes the whole build down with it, including the physics tests that have
+// nothing to do with Android.
+//
+// Marked resolvable and not consumable explicitly: this configuration exists only
+// to be resolved into a set of jars, never to be published, and saying so keeps it
+// off the deprecation path Gradle puts undeclared legacy configurations on.
+configurations {
+    natives {
+        canBeResolved = true
+        canBeConsumed = false
+    }
+}
+
 dependencies {
     implementation project(':render')
     implementation "com.badlogicgames.gdx:gdx-backend-android:${gdxVersion}"
@@ -82,8 +98,6 @@ dependencies {
     natives "com.badlogicgames.gdx:gdx-platform:${gdxVersion}:natives-x86_64"
 }
 
-configurations { natives }
-
 // Unpacks the .so files out of the natives jars into the ABI folders the Android
 // packager expects.
 tasks.register('copyAndroidNatives') {
@@ -92,7 +106,13 @@ tasks.register('copyAndroidNatives') {
     outputs.dir outputDir
     doFirst {
         configurations.natives.files.each { jar ->
-            def abi = jar.name.tokenize('-').last().replace('.jar', '')
+            // Everything after "natives-" is the ABI, and ABIs themselves contain
+            // hyphens: arm64-v8a, armeabi-v7a.
+            def matcher = jar.name =~ /natives-(.+)\.jar$/
+            if (!matcher.find()) {
+                throw new GradleException("cannot read an ABI from ${jar.name}")
+            }
+            def abi = matcher.group(1)
             def target = file("libs/${abi}")
             target.mkdirs()
             copy {
