@@ -1,0 +1,29 @@
+// LWJGL3 launcher. Exists so the ocean can be iterated on in seconds instead of
+// via an APK install, and so reference scenes can be rendered offscreen in CI.
+
+apply plugin: 'application'
+
+dependencies {
+    implementation project(':render')
+    implementation "com.badlogicgames.gdx:gdx-backend-lwjgl3:${gdxVersion}"
+    runtimeOnly "com.badlogicgames.gdx:gdx-platform:${gdxVersion}:natives-desktop"
+}
+
+application {
+    mainClass = 'com.bluemeridian.desktop.DesktopLauncher'
+}
+
+tasks.register('renderReferenceScenes', JavaExec) {
+    description = 'Renders the reference scenes offscreen to PNG (visual regression).'
+    group = 'verification'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.bluemeridian.desktop.ReferenceSceneTool'
+    args = [layout.buildDirectory.dir('reference-scenes').get().asFile.absolutePath]
+}
+
+tasks.register('verifyGpuFft', JavaExec) {
+    description = 'Runs the GPU FFT against the CPU reference and fails on divergence.'
+    group = 'verification'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.bluemeridian.desktop.GpuFftVerifyTool'
+}

@@ -1,0 +1,24 @@
+// Rendering: shaders, ocean surface, sky, post-processing.
+// Depends on libGDX core only - never on a backend. Backends are chosen by the
+// launcher modules (desktop/android), which keeps this module portable.
+
+dependencies {
+    api project(':core')
+    api "com.badlogicgames.gdx:gdx:${gdxVersion}"
+}
+
+// Every GLSL file under resources is validated at build time by glslangValidator
+// when it is installed. This catches shader syntax errors without a GPU, which
+// is the only cheap defence against "it compiled but the ocean is black".
+tasks.register('validateShaders', Exec) {
+    description = 'Runs glslangValidator over all shaders (skipped if not installed).'
+    group = 'verification'
+    def script = file('validate-shaders.sh')
+    inputs.dir file('src/main/resources/shaders')
+    inputs.file script
+    outputs.file layout.buildDirectory.file('shader-validation.log')
+    commandLine 'sh', script.absolutePath
+    workingDir projectDir
+}
+
+tasks.named('check') { dependsOn 'validateShaders' }
