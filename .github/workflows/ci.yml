@@ -4,9 +4,14 @@ name: build
 # a phone. Everything here serves that, plus the checks that stop a "improved"
 # shader from quietly ruining the ocean.
 
+# A branch with an open pull request would otherwise build twice for every
+# commit, once for the push and once for the pull_request, and the two runs
+# cannot cancel each other because their refs differ. Pushes are therefore
+# limited to the branches that publish something; everything else is covered by
+# the pull_request run.
 on:
   push:
-    branches: ['**']
+    branches: [main]
     tags: ['v*']
   pull_request:
   workflow_dispatch:
