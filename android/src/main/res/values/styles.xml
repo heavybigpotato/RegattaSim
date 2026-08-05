@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Fullscreen and dark: the loading frames should not flash white before the
+         sea appears. -->
+    <style name="BlueMeridianTheme" parent="android:Theme.Material.NoActionBar.Fullscreen">
+        <item name="android:windowBackground">@color/deep</item>
+    </style>
+</resources>

@@ -1,0 +1,60 @@
+// Blue Meridian - root build.
+//
+// Deliberate structural choices, documented here because they constrain every
+// module below (see also README "Hypotheses structurantes"):
+//
+//  * `core` is plain Java with no libGDX-graphics and no Android on its
+//    classpath. That is what lets the server replay the exact physics the
+//    client runs, and what lets the ocean spectrum be unit-tested on a JVM.
+//  * Everything targets Java 17 bytecode via `--release 17` rather than a
+//    Gradle toolchain, so the build works on any JDK >= 17 without needing to
+//    download a second JDK.
+//  * The Android Gradle Plugin is declared inside `android/build.gradle`, not
+//    here, so that a machine without the Android SDK never tries to resolve it.
+
+plugins {
+    id 'java'
+}
+
+allprojects {
+    group = 'com.bluemeridian'
+    version = '0.2.0'
+
+    repositories {
+        mavenCentral()
+        google()
+    }
+}
+
+subprojects {
+    // The Android module brings its own plugin and its own compile settings.
+    if (name == 'android') {
+        return
+    }
+
+    apply plugin: 'java-library'
+
+    java {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    tasks.withType(JavaCompile).configureEach {
+        options.release = 17
+        options.encoding = 'UTF-8'
+        options.compilerArgs << '-Xlint:all' << '-Xlint:-serial' << '-Xlint:-this-escape'
+    }
+
+    dependencies {
+        testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
+        testRuntimeOnly "org.junit.platform:junit-platform-launcher:${junitPlatformVersion}"
+    }
+
+    tasks.withType(Test).configureEach {
+        useJUnitPlatform()
+        testLogging {
+            events 'failed'
+            exceptionFormat 'full'
+        }
+    }
+}

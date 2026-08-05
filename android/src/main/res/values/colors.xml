@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The design system's deep background, from the brief's palette. -->
+    <color name="deep">#0B1F2A</color>
+</resources>

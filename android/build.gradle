@@ -1,0 +1,111 @@
+// Android launcher.
+//
+// The Android Gradle Plugin is declared here rather than in the root build so a
+// machine without the Android SDK never tries to resolve it. settings.gradle only
+// includes this module when an SDK is actually present, which keeps desktop
+// iteration on the ocean independent of the mobile toolchain.
+
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath "com.android.tools.build:gradle:${androidGradlePluginVersion}"
+    }
+}
+
+apply plugin: 'com.android.application'
+
+android {
+    namespace 'com.bluemeridian.android'
+    compileSdk androidCompileSdk.toInteger()
+
+    defaultConfig {
+        applicationId 'com.bluemeridian.android'
+        minSdk androidMinSdk.toInteger()
+        targetSdk androidTargetSdk.toInteger()
+        versionCode 2
+        versionName project.version
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    sourceSets {
+        main {
+            // libGDX's Android convention: native libraries live under jniLibs and
+            // game assets under assets. The shaders travel on the classpath inside
+            // the render jar instead, so no asset copying step is needed.
+            jniLibs.srcDirs = ['libs']
+        }
+    }
+
+    buildTypes {
+        debug {
+            // Signed with the standard debug key so the CI artifact installs
+            // directly from a phone. There is nothing to protect in a debug build
+            // and requiring a keystore secret would stop the pipeline working on a
+            // fork.
+            minifyEnabled false
+        }
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'),
+                    'proguard-rules.pro'
+        }
+    }
+
+    packagingOptions {
+        resources {
+            excludes += ['META-INF/robovm/**', 'META-INF/DEPENDENCY*']
+        }
+    }
+
+    lint {
+        // A lint failure must not be able to block an ocean build; the report is
+        // still produced and read.
+        abortOnError false
+    }
+}
+
+dependencies {
+    implementation project(':render')
+    implementation "com.badlogicgames.gdx:gdx-backend-android:${gdxVersion}"
+
+    // libGDX ships its Android natives as classified artifacts, one per ABI.
+    natives "com.badlogicgames.gdx:gdx-platform:${gdxVersion}:natives-armeabi-v7a"
+    natives "com.badlogicgames.gdx:gdx-platform:${gdxVersion}:natives-arm64-v8a"
+    natives "com.badlogicgames.gdx:gdx-platform:${gdxVersion}:natives-x86"
+    natives "com.badlogicgames.gdx:gdx-platform:${gdxVersion}:natives-x86_64"
+}
+
+configurations { natives }
+
+// Unpacks the .so files out of the natives jars into the ABI folders the Android
+// packager expects.
+tasks.register('copyAndroidNatives') {
+    description = 'Extracts libGDX native libraries into libs/<abi>.'
+    def outputDir = file('libs')
+    outputs.dir outputDir
+    doFirst {
+        configurations.natives.files.each { jar ->
+            def abi = jar.name.tokenize('-').last().replace('.jar', '')
+            def target = file("libs/${abi}")
+            target.mkdirs()
+            copy {
+                from zipTree(jar)
+                into target
+                include "*.so"
+            }
+        }
+    }
+}
+
+tasks.configureEach { task ->
+    if (task.name.startsWith('merge') && task.name.endsWith('JniLibFolders')) {
+        task.dependsOn 'copyAndroidNatives'
+    }
+}

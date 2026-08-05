@@ -1,0 +1,40 @@
+// Pure JVM. No libGDX, no Android, no OpenGL: enforced by the check below.
+// This module is shared verbatim with the (future) authoritative server, so
+// anything that cannot run headless on a plain JVM does not belong here.
+
+dependencies {
+    // intentionally empty: core has no runtime dependencies
+}
+
+def forbiddenPackages = ['com.badlogic.gdx', 'android.', 'androidx.']
+
+tasks.register('checkCorePurity') {
+    description = 'Fails if core ever imports libGDX or Android.'
+    group = 'verification'
+    def srcDir = file('src/main/java')
+    inputs.dir srcDir
+    outputs.upToDateWhen { false }
+    doLast {
+        def offenders = []
+        srcDir.eachFileRecurse { f ->
+            if (f.name.endsWith('.java')) {
+                f.eachLine { line ->
+                    if (line.startsWith('import ')) {
+                        def imported = line.substring(7).trim()
+                        forbiddenPackages.each { pkg ->
+                            if (imported.startsWith(pkg)) {
+                                offenders << "${f.name}: ${line.trim()}"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (!offenders.isEmpty()) {
+            throw new GradleException(
+                    "core must stay free of graphics/Android imports:\n  " + offenders.join('\n  '))
+        }
+    }
+}
+
+tasks.named('check') { dependsOn 'checkCorePurity' }

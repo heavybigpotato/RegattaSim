@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blue Meridian - ocean</title>
+<style>
+  /* The design system from the brief: one accent, high contrast, nothing that
+     competes with the water. */
+  :root {
+    --deep: #0B1F2A;
+    --surface: #12303F;
+    --raised: #1B4557;
+    --text: #E8EEF2;
+    --muted: #9BB0BC;
+    --accent: #F2A03D;
+    --wind: #5AC8E8;
+    --alert: #E5484D;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--deep);
+    color: var(--text);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 24px 96px; }
+  header { padding: 72px 0 40px; border-bottom: 1px solid var(--raised); }
+  h1 { font-size: 39px; margin: 0 0 8px; letter-spacing: -0.02em; }
+  .tagline { color: var(--muted); font-size: 20px; margin: 0; }
+  h2 { font-size: 25px; margin: 56px 0 8px; }
+  h3 { font-size: 20px; margin: 32px 0 8px; }
+  p { margin: 0 0 16px; }
+  a { color: var(--accent); }
+  .status {
+    display: inline-block; margin-top: 24px; padding: 6px 12px;
+    background: var(--surface); border: 1px solid var(--raised); border-radius: 4px;
+    color: var(--muted); font-size: 14px;
+  }
+  figure { margin: 32px 0; }
+  figure img {
+    width: 100%; height: auto; display: block; border-radius: 6px;
+    border: 1px solid var(--raised); background: var(--surface);
+  }
+  figcaption { color: var(--muted); font-size: 14px; margin-top: 10px; }
+  figcaption b { color: var(--text); font-weight: 600; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px; }
+  .grid figure { margin: 0; }
+  table { width: 100%; border-collapse: collapse; margin: 16px 0 24px; font-size: 15px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--raised); }
+  th { color: var(--muted); font-weight: 600; }
+  td.num { font-variant-numeric: tabular-nums; }
+  .done { color: #3DD68C; }
+  .todo { color: var(--muted); }
+  code {
+    background: var(--surface); padding: 2px 6px; border-radius: 3px;
+    font-size: 14px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .note {
+    border-left: 3px solid var(--accent); background: var(--surface);
+    padding: 16px 20px; margin: 24px 0; border-radius: 0 4px 4px 0;
+  }
+  footer { margin-top: 72px; padding-top: 24px; border-top: 1px solid var(--raised);
+           color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Blue Meridian</h1>
+  <p class="tagline">A world sailing simulator for Android. The ocean comes first.</p>
+  <div class="status">Phase 1 &mdash; FFT ocean and sky. No boat yet.</div>
+</header>
+
+<h2>Where it is</h2>
+<p>
+  The sea is a Tessendorf FFT surface: a JONSWAP wind sea and an independent swell
+  train, decomposed into three cascades at 512&nbsp;m, 128&nbsp;m and 16&nbsp;m, evolved
+  on the GPU every frame. The sky is an analytic Preetham model, evaluated per pixel
+  and reused for the water's reflections so sea and sky can never disagree.
+</p>
+<p>
+  Every frame below was rendered by CI on a machine with no graphics card, using
+  Mesa's software rasteriser. They are the project's visual regression suite: if a
+  shader change alters the ocean, these images change and the diff says so.
+</p>
+
+<figure>
+  <img src="images/02-gale-crossed-sea.png" alt="A 25 knot sea at sunset, swell crossing the wind waves at 55 degrees, sun low and nearly behind the camera">
+  <figcaption>
+    <b>25 knots, crossed sea, low sun.</b> Hs 5.7&nbsp;m. A 13&nbsp;s swell running
+    55&deg; across the wind sea &mdash; the two trains stay visibly separate, which is
+    what a real ocean does and what a single-spectrum surface cannot show.
+  </figcaption>
+</figure>
+
+<div class="grid">
+  <figure>
+    <img src="images/03-trade-wind.png" alt="Trade wind sailing conditions, mid-morning, moderate blue sea">
+    <figcaption><b>15 knots, mid-morning.</b> Hs 2.2&nbsp;m. The everyday condition.</figcaption>
+  </figure>
+  <figure>
+    <img src="images/06-storm.png" alt="Storm force sea with whitecaps breaking on the crests">
+    <figcaption><b>40 knots.</b> Hs 13.5&nbsp;m. Foam is deposited where the surface
+      Jacobian folds, so whitecaps land on breaking crests rather than on every peak.</figcaption>
+  </figure>
+  <figure>
+    <img src="images/04-backlit-swell.png" alt="Long swell with the sun low and ahead">
+    <figcaption><b>Backlit swell.</b> Sun low and nearly dead ahead: the scattering
+      term lights the crests from behind.</figcaption>
+  </figure>
+  <figure>
+    <img src="images/01-calm-dawn.png" alt="Calm dawn, small sea, low sun, near-mirror water">
+    <figcaption><b>6 knots at dawn.</b> Hs 0.45&nbsp;m. Almost a mirror.</figcaption>
+  </figure>
+</div>
+
+<h2>How it is built</h2>
+<table>
+  <tr><th>Layer</th><th>What</th></tr>
+  <tr><td>Spectrum</td><td>JONSWAP with fetch relations, capped at full development; Gaussian swell; Mitsuyasu directional spreading</td></tr>
+  <tr><td>Transform</td><td>Cooley-Tukey inverse FFT from a precomputed butterfly table, four packed complex signals per cascade</td></tr>
+  <tr><td>Surface</td><td>Screen-space projected grid &mdash; no LOD rings, no seams, density that follows the screen rather than the world</td></tr>
+  <tr><td>Shading</td><td>Fresnel at IOR 1.333, analytic sky reflection, height-driven subsurface scattering, Jacobian foam broken up by Worley noise</td></tr>
+  <tr><td>Sky</td><td>Preetham, with its low-sun behaviour handled explicitly</td></tr>
+  <tr><td>Output</td><td>HDR half-float, sky-driven auto-exposure, thresholded bloom, ACES</td></tr>
+</table>
+
+<h2>Roadmap</h2>
+<table>
+  <tr><th>Phase</th><th>Content</th><th>State</th></tr>
+  <tr><td class="num">0</td><td>Multi-module build, desktop and Android launchers, CI producing an APK</td><td class="done">done</td></tr>
+  <tr><td class="num">1</td><td>The ocean: FFT cascades, sky, foam, post-processing</td><td class="done">done, polish remaining</td></tr>
+  <tr><td class="num">2</td><td>Sailing: hull on the surface, polars, apparent wind, deformable sails</td><td class="todo">next</td></tr>
+  <tr><td class="num">3</td><td>Live weather: GFS and WaveWatch III behind a provider interface</td><td class="todo">planned</td></tr>
+  <tr><td class="num">4</td><td>Inshore multiplayer: 20&nbsp;Hz authoritative tick, starts, wind shadow</td><td class="todo">planned</td></tr>
+  <tr><td class="num">5</td><td>Offshore: world map, isochrone routing, races that survive the app closing</td><td class="todo">planned</td></tr>
+  <tr><td class="num">6</td><td>The 3D workshop: paint layers, liveries, rig and foil choices</td><td class="todo">planned</td></tr>
+</table>
+
+<div class="note">
+  <p style="margin:0"><b>Free, in full.</b> No purchases, no season pass, no
+  currency, no advertising. The competitive ranking is the product, and there is
+  nothing to sell that would not damage it. Weather comes from NOAA GFS and
+  WaveWatch III, which are public domain, so the data stays free too.</p>
+</div>
+
+<h2>Getting it on a phone</h2>
+<p>
+  Every push builds a debug APK and attaches it to a GitHub release. Open the
+  releases page on the phone, download the APK, allow installation from that source
+  once, and open it. The game runs natively at full quality &mdash; nothing about it
+  goes through a browser.
+</p>
+
+<footer>
+  Blue Meridian is a work in progress. Boat polars are derived from published
+  performance data for real racing classes and are approximations, not official
+  figures; no class association, event, or sponsor is affiliated with this project.
+</footer>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,19 @@
+rootProject.name = 'blue-meridian'
+
+include 'core'
+include 'render'
+include 'desktop'
+
+// The Android module needs the Android SDK. Including it unconditionally makes
+// `./gradlew build` fail on any machine without one (CI shader jobs, a fresh
+// laptop, this container). It is included only when an SDK is actually
+// reachable, so desktop iteration on the ocean never depends on the SDK.
+def androidSdkAvailable = System.getenv('ANDROID_HOME') ||
+        System.getenv('ANDROID_SDK_ROOT') ||
+        file('local.properties').exists()
+
+if (androidSdkAvailable) {
+    include 'android'
+} else {
+    logger.lifecycle('[blue-meridian] Android SDK not found - :android excluded from this build.')
+}
