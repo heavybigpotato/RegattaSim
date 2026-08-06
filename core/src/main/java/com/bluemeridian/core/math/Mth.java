@@ -9,11 +9,29 @@ package com.bluemeridian.core.math;
  */
 public final class Mth {
 
-    /** Standard gravity, m/s^2. Fixed constant: client and server must agree bit for bit. */
-    public static final float GRAVITY = 9.80665f;
+    /**
+     * Standard gravity, m/s^2. Fixed constant: client and server must agree bit for
+     * bit.
+     *
+     * <p>A double, not a float. Every use of it is inside a double expression -
+     * dispersion, the spectra, the directional spreading - so a float constant was
+     * silently widening 9.806650161743164 into arithmetic that then carried a
+     * relative error of 1.6e-8 through every wavenumber and frequency. Nothing
+     * visible came of it, but this constant is the one the authoritative server
+     * will replay physics against, and "close enough" is not a property that
+     * survives being multiplied for three weeks of an offshore race.
+     */
+    public static final double GRAVITY = 9.80665;
 
-    public static final float TAU = (float) (Math.PI * 2.0);
-    public static final float PI = (float) Math.PI;
+    /**
+     * Doubles for the same reason {@link #GRAVITY} is. Every use of TAU is a
+     * wavenumber, a frequency or an angle inside double arithmetic, and a float
+     * 2*pi carries a relative error of 2.8e-8 into all of them. That was enough to
+     * make the browser build and the Java build disagree about wave frequencies in
+     * the eighth digit, which is how it was found.
+     */
+    public static final double TAU = Math.PI * 2.0;
+    public static final double PI = Math.PI;
 
     private Mth() {
     }
@@ -39,13 +57,19 @@ public final class Mth {
         return t * t * (3f - 2f * t);
     }
 
-    /** Wraps an angle in radians into [-PI, PI). */
+    /**
+     * Wraps an angle in radians into [-PI, PI).
+     *
+     * <p>Takes and returns a float because its callers are shading and direction
+     * code where float is the natural width; the arithmetic itself is done in
+     * double so the constants stay exact.
+     */
     public static float wrapPi(float radians) {
-        float r = (radians + PI) % TAU;
-        if (r < 0f) {
+        double r = (radians + PI) % TAU;
+        if (r < 0.0) {
             r += TAU;
         }
-        return r - PI;
+        return (float) (r - PI);
     }
 
     /** Wraps an angle in degrees into [0, 360). */

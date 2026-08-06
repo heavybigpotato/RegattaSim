@@ -38,3 +38,12 @@ tasks.register('checkCorePurity') {
 }
 
 tasks.named('check') { dependsOn 'checkCorePurity' }
+
+// Prints the authoritative ocean numbers as JSON so the WebGL build's
+// transliterated maths can be checked against them. See tools/web-parity-check.js.
+tasks.register('dumpSpectrum', JavaExec) {
+    description = 'Prints reference ocean values as JSON.'
+    group = 'verification'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.bluemeridian.core.tools.SpectrumDump'
+}

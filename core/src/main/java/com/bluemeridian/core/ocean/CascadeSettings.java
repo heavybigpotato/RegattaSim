@@ -85,7 +85,7 @@ public final class CascadeSettings {
 
     /** Fundamental wavenumber (bin spacing) of a cascade, rad/m. */
     public float deltaK(int cascade) {
-        return Mth.TAU / patchSizes[cascade];
+        return (float) (Mth.TAU / patchSizes[cascade]);
     }
 
     /** The three-cascade arrangement from the design brief: 512 m / 128 m / 16 m. */

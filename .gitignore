@@ -9,6 +9,11 @@ android/libs/
 *.apk
 *.aab
 
+# Node (build-time browser checks only)
+node_modules/
+tools/package-lock.json
+web-ocean.png
+
 # IDE
 .idea/
 *.iml

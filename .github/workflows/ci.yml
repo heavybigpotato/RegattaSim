@@ -77,6 +77,101 @@ jobs:
           path: core/build/reports/tests/test
           if-no-files-found: ignore
 
+  web:
+    name: webgl showcase
+    runs-on: ubuntu-latest
+    needs: core
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install node dependencies
+        working-directory: tools
+        run: npm install --no-fund --no-audit
+
+      - name: Shaders are in sync with the native sources
+        # docs/ocean/shaders.js is generated. If it drifts from
+        # render/src/main/resources/shaders, the web preview stops being evidence
+        # about the renderer it claims to preview, so regenerating must be a no-op.
+        run: |
+          ./gradlew :render:generateWebShaders --no-daemon
+          git diff --exit-code -- docs/ocean/shaders.js
+
+      - name: The web maths agrees with core
+        # docs/ocean/spectrum.js is a hand transliteration of the Java. A lost sign
+        # or a mis-ported hash still yields a plausible ocean - just not this one -
+        # so both are evaluated for one sea state and compared value by value.
+        run: |
+          ./gradlew :core:dumpSpectrum -q --no-daemon > java-spectrum.json
+          node tools/web-parity-check.js java-spectrum.json
+
+      - name: Install browser
+        working-directory: tools
+        run: npx playwright install --with-deps chromium
+
+      - name: Run the WebGL ocean
+        # Served rather than opened from disk: the page is an ES module and
+        # file:// origins cannot import.
+        run: |
+          python3 -m http.server 8712 --directory docs &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8712/ocean/ >/dev/null && break
+            sleep 1
+          done
+          node tools/web-ocean-check.js http://localhost:8712/ocean/ web-ocean.png 150
+
+      - name: Upload the WebGL screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-ocean
+          path: web-ocean.png
+          if-no-files-found: ignore
+
+  pages:
+    name: github pages
+    runs-on: ubuntu-latest
+    needs: [core, web]
+    # Only the default branch publishes. A pull request must not be able to
+    # overwrite the live site.
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure Pages
+        # enablement: true turns Pages on for the repository if it is off, using
+        # the workflow token. That matters here: the owner is working from a phone,
+        # and this removes the need to visit repository settings at all.
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Upload the site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+      - name: Deploy
+        id: deploy
+        uses: actions/deploy-pages@v4
+
   apk:
     name: android apk
     runs-on: ubuntu-latest
