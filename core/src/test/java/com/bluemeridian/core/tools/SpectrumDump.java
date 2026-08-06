@@ -6,6 +6,10 @@ import com.bluemeridian.core.ocean.CascadeSettings;
 import com.bluemeridian.core.ocean.Dispersion;
 import com.bluemeridian.core.ocean.InitialSpectrum;
 import com.bluemeridian.core.ocean.SeaState;
+import com.bluemeridian.core.ocean.WaveSurface;
+import com.bluemeridian.core.sailing.ApparentWind;
+import com.bluemeridian.core.sailing.PolarDiagram;
+import com.bluemeridian.core.sailing.SailingBoat;
 import java.io.PrintStream;
 import java.util.Locale;
 
@@ -102,6 +106,43 @@ public final class SpectrumDump {
                     plan.indexA(stage, lane), plan.indexB(stage, lane));
         }
         out.println("],");
+
+        // --- sailing -------------------------------------------------------
+        PolarDiagram polar = PolarDiagram.fromClasspath("polars/class40.csv");
+        out.print("  \"polar\": [");
+        double[][] polarCases = {{45, 12}, {90, 8}, {135, 20}, {60, 17.5}, {170, 6.5}, {20, 12}};
+        for (int i = 0; i < polarCases.length; i++) {
+            out.printf(Locale.ROOT, "%s%.12f", i == 0 ? "" : ", ",
+                    polar.boatSpeed(Math.toRadians(polarCases[i][0]),
+                            polarCases[i][1] * 0.514444));
+        }
+        out.println("],");
+
+        out.print("  \"apparentWind\": [");
+        double[][] windCases = {{12, 0, 8, Math.PI - Math.toRadians(45)},
+                                {10, 0.7, 6, 1.9}, {8, 0, 8, 0}, {14, 2.2, 3, -1.1}};
+        for (int i = 0; i < windCases.length; i++) {
+            ApparentWind aw = ApparentWind.of(windCases[i][0] * 0.514444, windCases[i][1],
+                    windCases[i][2] * 0.514444, windCases[i][3]);
+            out.printf(Locale.ROOT, "%s[%.12f, %.12f, %.12f]", i == 0 ? "" : ", ",
+                    aw.speed, aw.angle, aw.trueAngle);
+        }
+        out.println("],");
+
+        // A full trajectory: the boat is integrated for two minutes with helm on,
+        // over a known swell, so the whole loop is compared rather than one step.
+        SailingBoat boat = new SailingBoat(polar, SailingBoat.HullShape.class40());
+        boat.setPosition(0, 0, Math.PI - Math.toRadians(50));
+        boat.setRudder(0.25);
+        boat.setTrim(0.8);
+        WaveSurface swell = WaveSurface.sine(1.2, 40.0, 0.3, 0.0);
+        for (int i = 0; i < 2400; i++) {
+            boat.advance(0.05, 13.0 * 0.514444, 0.0, swell, i * 0.05);
+        }
+        out.printf(Locale.ROOT,
+                "  \"boat\": [%.10f, %.10f, %.10f, %.10f, %.10f, %.10f, %.10f, %.10f],%n",
+                boat.x(), boat.z(), boat.heading(), boat.speed(),
+                boat.heave(), boat.pitch(), boat.roll(), boat.windHeel());
 
         out.print("  \"meanDomeLuminance\": [");
         double[] elevations = {-0.05, 0.05, 0.3, 0.9, 1.4};

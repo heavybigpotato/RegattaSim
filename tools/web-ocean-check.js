@@ -42,23 +42,34 @@ import { chromium } from 'playwright';
     process.exit(1);
   }
 
+  // Drives the page's own frame step, not just the renderer: the boat is sailed
+  // there, so calling `ocean.render` alone would leave the hull parked at the
+  // origin and pass a page whose physics never ran.
   await page.evaluate(async (n) => {
     const ocean = window.__ocean;
     ocean.time = 40;
     for (let i = 0; i < n; i++) {
-      ocean.render(1 / 30);
+      window.__advance(1 / 30);
       if (i % 10 === 0) await new Promise((r) => setTimeout(r, 0));
     }
   }, frames);
 
   const stats = await page.evaluate(() => {
     const o = window.__ocean;
+    const b = window.__boat;
     return {
       glError: o.gl.getError(),
       significantWaveHeight: o.sea.significantWaveHeight,
       exposure: o.exposure,
       cascades: o.cascades.length,
       resolution: o.resolution,
+      boatKnots: b.speedKnots,
+      boatTrueWindAngle: (b.wind.trueAngle * 180) / Math.PI,
+      boatSailed: Math.hypot(b.x, b.z),
+      boatHeave: b.heave,
+      boatHeelDegrees: (b.windHeel * 180) / Math.PI,
+      hullTriangles: o.boatMeshes.hull.count / 3,
+      sailTriangles: o.boatMeshes.sail.count / 3,
     };
   });
   console.log(JSON.stringify(stats, null, 2));
@@ -68,6 +79,32 @@ import { chromium } from 'playwright';
   // without erroring, so assert the spectrum actually built something.
   if (!(stats.significantWaveHeight > 0.5)) {
     problems.push('significant wave height is ' + stats.significantWaveHeight + ' m');
+  }
+  // Same reasoning for the boat: a hull that never accelerated would draw fine.
+  if (!(stats.boatKnots > 1)) {
+    problems.push('the boat is doing ' + stats.boatKnots + ' kt');
+  }
+  // One hull length. A boat accelerating from rest on a nine-second time constant
+  // covers about twenty metres in the ten seconds this check drives, so the
+  // threshold is loose enough not to be a tuning knob and tight enough that a
+  // hull which never left the origin fails.
+  if (!(stats.boatSailed > 12.18)) {
+    problems.push('the boat has covered ' + stats.boatSailed + ' m');
+  }
+  // And a hull sitting on a mean-water plane is not floating on the sea state.
+  if (!(Math.abs(stats.boatHeave) > 1e-3)) {
+    problems.push('the boat is not riding the waves, heave is ' + stats.boatHeave + ' m');
+  }
+  // The page starts close-hauled on starboard, so the wind is over the starboard
+  // side and the boat must be lying over to port - a negative roll by this
+  // convention. A boat heeling the wrong way is the sort of thing that looks
+  // merely odd on screen and is a sign inversion underneath.
+  if (!(stats.boatHeelDegrees < -8)) {
+    problems.push('close-hauled on starboard the boat should heel to port, got '
+      + stats.boatHeelDegrees + ' degrees');
+  }
+  if (!(stats.hullTriangles > 0 && stats.sailTriangles > 0)) {
+    problems.push('boat geometry is empty: ' + JSON.stringify(stats));
   }
 
   if (out) await page.screenshot({ path: out });

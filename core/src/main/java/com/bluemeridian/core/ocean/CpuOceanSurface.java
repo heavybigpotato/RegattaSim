@@ -21,7 +21,7 @@ import com.bluemeridian.core.math.Mth;
  * as the choppiness stays below the self-intersection limit, which is the same
  * limit the renderer respects.
  */
-public final class CpuOceanSurface {
+public final class CpuOceanSurface implements WaveSurface {
 
     private final int resolution;
     private final int cascadeCount;
@@ -239,6 +239,7 @@ public final class CpuOceanSurface {
      * point that lands at {@code (x,z)} is found by repeatedly stepping back along
      * the displacement it produces.
      */
+    @Override
     public float heightAt(double worldX, double worldZ) {
         float[] tmp = new float[3];
         double u = worldX;

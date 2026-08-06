@@ -254,13 +254,22 @@ function directionalSpectrum(sea, kx, kz, kMin, kMax) {
 /**
  * The initial spectrum h0 for one cascade, as (h0.re, h0.im, conj(h0(-k)).re,
  * conj(h0(-k)).im) per texel.
+ *
+ * @param index        which entry of `cascades` supplies the patch size and band
+ * @param decorrelator salt for the phase field; defaults to `index` and must
+ *                     equal the *renderer's* cascade index, so that a coarser
+ *                     physics grid realises the same ocean rather than a
+ *                     different one
  */
-export function initialSpectrum(sea, cascades, index) {
+export function initialSpectrum(sea, cascades, index, decorrelator = index) {
   const n = cascades.resolution;
   const patch = cascades.patchSizes[index];
   const kMin = cascades.kMin[index];
   const kMax = cascades.kMax[index];
-  const seed = mix64(BigInt.asUintN(64, sea.seed + 0x9E3779B9n * BigInt(index + 1)));
+  // Mixing the cascade index into the seed decorrelates the cascades. Without it
+  // they share phases and the three independent scales collapse into one scaled
+  // copy, visible as a repeating diagonal grain.
+  const seed = mix64(BigInt.asUintN(64, sea.seed + 0x9E3779B9n * BigInt(decorrelator + 1)));
 
   const dk = TAU / patch;
   const amplitudeScale = Math.sqrt(0.5 * dk * dk);
@@ -405,4 +414,237 @@ export function meanDomeLuminance(sunElevation, turbidity) {
     }
   }
   return weight > 0 ? sum / weight : 0;
+}
+
+// --- CPU wave field ---------------------------------------------------------
+
+/**
+ * The wave height evaluated on the CPU, mirroring CpuOceanSurface in `core`.
+ *
+ * The boat has to float on the water that is drawn, and reading the GPU's
+ * displacement maps back every frame would stall the pipeline - the one thing a
+ * mobile GPU least forgives. So the same spectrum is transformed again on the
+ * CPU at a coarse resolution. That sounds wasteful and is not: a 32-point
+ * transform is a few thousand operations, while a readback costs a full
+ * synchronisation.
+ *
+ * One deliberate simplification: the number of cascades is capped, because the
+ * finest one carries chop measured in centimetres over metres and a hull this
+ * long averages it out. What is *not* simplified is the horizontal displacement.
+ * A choppy surface is parametric - the grid point at (u,v) is drawn at
+ * (u + Dx, v + Dz) - so the height above a fixed world position is only found by
+ * inverting that map. Skipping the inversion samples the wrong place on the wave,
+ * and on a steep sea that is the difference between a boat on the water and a
+ * boat inside it.
+ */
+export class WaveField {
+  /**
+   * @param resolution   FFT grid for physics
+   * @param cascadeLimit how many cascades to evaluate, from the largest down
+   */
+  constructor(sea, cascades, resolution = 32, cascadeLimit = 2) {
+    const count = Math.max(1, Math.min(cascadeLimit, cascades.patchSizes.length));
+    this.n = resolution;
+    this.cascadeCount = count;
+    this.choppiness = sea.choppiness;
+    this.patchSizes = [];
+    this.h0 = [];
+    this.wave = [];
+    this.heightField = [];
+    this.displacementX = [];
+    this.displacementZ = [];
+
+    for (let c = 0; c < count; c++) {
+      const patch = cascades.patchSizes[c];
+      // Band limits come from the render cascade layout, so a coarser physics
+      // grid still realises the same ocean rather than a different one.
+      const band = {
+        resolution,
+        patchSizes: [patch],
+        kMin: [cascades.kMin[c]],
+        kMax: [cascades.kMax[c]],
+      };
+      this.patchSizes.push(patch);
+      // The fourth argument is the decorrelator: it must be the *render* cascade
+      // index, not 0, or every cascade here would share one phase field.
+      this.h0.push(initialSpectrum(sea, band, 0, c));
+      this.wave.push(waveData(sea, band, 0));
+      this.heightField.push(new Float32Array(resolution * resolution));
+      this.displacementX.push(new Float32Array(resolution * resolution));
+      this.displacementZ.push(new Float32Array(resolution * resolution));
+    }
+
+    this.plan = butterflyPlan(resolution);
+    this.spectrumH = new Float32Array(resolution * resolution * 2);
+    this.spectrumD = new Float32Array(resolution * resolution * 2);
+    this.scratch = new Float32Array(resolution * resolution * 2);
+    this.sample = [0, 0, 0];
+    this.time = NaN;
+  }
+
+  /** Rebuilds the spatial fields for a given time. Idempotent for a repeated time. */
+  update(time) {
+    if (time === this.time) return;
+    this.time = time;
+    for (let c = 0; c < this.cascadeCount; c++) this.evolve(c, time);
+  }
+
+  evolve(c, time) {
+    const n = this.n;
+    const h0 = this.h0[c];
+    const wave = this.wave[c];
+    const h = this.spectrumH;
+    const d = this.spectrumD;
+
+    for (let i = 0; i < n * n; i++) {
+      const o4 = i * 4;
+      const o2 = i * 2;
+      const phase = wave[o4 + 3] * time;
+      const cos = Math.cos(phase);
+      const sin = Math.sin(phase);
+      const a = h0[o4], b = h0[o4 + 1];
+      const p = h0[o4 + 2], q = h0[o4 + 3];
+      // h~(k,t) = h0 e^{iwt} + conj(h0(-k)) e^{-iwt}
+      const hRe = a * cos - b * sin + p * cos + q * sin;
+      const hIm = a * sin + b * cos - p * sin + q * cos;
+      h[o2] = hRe;
+      h[o2 + 1] = hIm;
+
+      const kx = wave[o4];
+      const kz = wave[o4 + 1];
+      const k = wave[o4 + 2];
+      if (k < 1e-9) {
+        d[o2] = 0;
+        d[o2 + 1] = 0;
+        continue;
+      }
+      // D = -i (k/|k|) h~, and multiplying by -i maps (re, im) -> (im, -re).
+      const nx = kx / k;
+      const nz = kz / k;
+      const dxRe = hIm * nx;
+      const dxIm = -hRe * nx;
+      const dzRe = hIm * nz;
+      const dzIm = -hRe * nz;
+      // Two Hermitian signals packed into one transform: the real part of the
+      // result comes out as Dx and the imaginary part as Dz.
+      d[o2] = dxRe - dzIm;
+      d[o2 + 1] = dxIm + dzRe;
+    }
+
+    this.inverse2d(h);
+    this.inverse2d(d);
+
+    const hf = this.heightField[c];
+    const dxf = this.displacementX[c];
+    const dzf = this.displacementZ[c];
+    for (let i = 0; i < n * n; i++) {
+      hf[i] = h[i * 2];
+      dxf[i] = d[i * 2] * this.choppiness;
+      dzf[i] = d[i * 2 + 1] * this.choppiness;
+    }
+  }
+
+  /** Table-driven inverse transform, the same butterfly schedule the GPU runs. */
+  inverse2d(data) {
+    const n = this.n;
+    const { stages, table } = this.plan;
+    const scratch = this.scratch;
+
+    for (let axis = 0; axis < 2; axis++) {
+      for (let stage = 0; stage < stages; stage++) {
+        for (let row = 0; row < n; row++) {
+          for (let col = 0; col < n; col++) {
+            const lane = axis === 0 ? col : row;
+            const o = (lane * stages + stage) * 4;
+            const wr = table[o];
+            const wi = table[o + 1];
+            const ia = table[o + 2];
+            const ib = table[o + 3];
+            const aIndex = (axis === 0 ? row * n + ia : ia * n + col) * 2;
+            const bIndex = (axis === 0 ? row * n + ib : ib * n + col) * 2;
+            const br = data[bIndex];
+            const bi = data[bIndex + 1];
+            const out = (row * n + col) * 2;
+            scratch[out] = data[aIndex] + (wr * br - wi * bi);
+            scratch[out + 1] = data[aIndex + 1] + (wr * bi + wi * br);
+          }
+        }
+        data.set(scratch);
+      }
+    }
+  }
+
+  /** Bilinear lookup with wrapping, in one cascade's own patch space. */
+  sampleField(field, cascade, worldX, worldZ) {
+    const n = this.n;
+    const patch = this.patchSizes[cascade];
+    const fx = (worldX / patch) * n;
+    const fz = (worldZ / patch) * n;
+    const x0 = Math.floor(fx);
+    const z0 = Math.floor(fz);
+    const tx = fx - x0;
+    const tz = fz - z0;
+    const wrap = (v) => ((v % n) + n) % n;
+    const xi0 = wrap(x0);
+    const zi0 = wrap(z0);
+    const xi1 = (xi0 + 1) % n;
+    const zi1 = (zi0 + 1) % n;
+
+    const v00 = field[zi0 * n + xi0];
+    const v10 = field[zi0 * n + xi1];
+    const v01 = field[zi1 * n + xi0];
+    const v11 = field[zi1 * n + xi1];
+    const a = v00 + (v10 - v00) * tx;
+    const b = v01 + (v11 - v01) * tx;
+    return a + (b - a) * tz;
+  }
+
+  /** Displacement of the grid point whose undisplaced position is (u, v). */
+  displacementAtGridPoint(u, v, out) {
+    let dx = 0;
+    let h = 0;
+    let dz = 0;
+    for (let c = 0; c < this.cascadeCount; c++) {
+      dx += this.sampleField(this.displacementX[c], c, u, v);
+      h += this.sampleField(this.heightField[c], c, u, v);
+      dz += this.sampleField(this.displacementZ[c], c, u, v);
+    }
+    out[0] = dx;
+    out[1] = h;
+    out[2] = dz;
+    return out;
+  }
+
+  /**
+   * Surface elevation directly above a world position, metres above mean water.
+   *
+   * Four fixed-point steps back along the displacement, the same count
+   * CpuOceanSurface uses; it converges quickly while the choppiness stays below
+   * the self-intersection limit the renderer also respects.
+   */
+  heightAt(worldX, worldZ) {
+    const out = this.sample;
+    let u = worldX;
+    let v = worldZ;
+    for (let i = 0; i < 4; i++) {
+      this.displacementAtGridPoint(u, v, out);
+      u = worldX - out[0];
+      v = worldZ - out[2];
+    }
+    return this.displacementAtGridPoint(u, v, out)[1];
+  }
+
+  /** Root-mean-square surface elevation across the grid, for diagnostics and tests. */
+  rmsElevation() {
+    let sum = 0;
+    let count = 0;
+    for (let c = 0; c < this.cascadeCount; c++) {
+      for (const v of this.heightField[c]) {
+        sum += v * v;
+        count++;
+      }
+    }
+    // Cascades are independent, so their variances add.
+    return Math.sqrt(sum / (count / this.cascadeCount));
+  }
 }
