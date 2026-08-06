@@ -1,0 +1,8 @@
+{
+  "name": "blue-meridian-tools",
+  "private": true,
+  "description": "Build-time checks that need a browser. Not part of the game.",
+  "devDependencies": {
+    "playwright": "^1.49.0"
+  }
+}

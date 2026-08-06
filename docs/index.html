@@ -60,6 +60,13 @@
     border-left: 3px solid var(--accent); background: var(--surface);
     padding: 16px 20px; margin: 24px 0; border-radius: 0 4px 4px 0;
   }
+  .live {
+    display: block; margin: 40px 0 8px; padding: 20px 24px;
+    background: var(--surface); border: 1px solid var(--accent);
+    border-radius: 8px; text-decoration: none;
+  }
+  .live-label { display: block; color: var(--accent); font-size: 20px; font-weight: 600; }
+  .live-note { display: block; color: var(--muted); font-size: 14px; margin-top: 4px; }
   footer { margin-top: 72px; padding-top: 24px; border-top: 1px solid var(--raised);
            color: var(--muted); font-size: 14px; }
 </style>
@@ -72,6 +79,11 @@
   <p class="tagline">A world sailing simulator for Android. The ocean comes first.</p>
   <div class="status">Phase 1 &mdash; FFT ocean and sky. No boat yet.</div>
 </header>
+
+<a class="live" href="ocean/">
+  <span class="live-label">Open the live ocean</span>
+  <span class="live-note">Runs in the browser, on the phone you are holding. No install, no account.</span>
+</a>
 
 <h2>Where it is</h2>
 <p>
@@ -150,8 +162,15 @@
 <p>
   Every push builds a debug APK and attaches it to a GitHub release. Open the
   releases page on the phone, download the APK, allow installation from that source
-  once, and open it. The game runs natively at full quality &mdash; nothing about it
-  goes through a browser.
+  once, and open it. The game runs natively at full quality.
+</p>
+<p>
+  <b>On an iPhone that will not work</b>, and no app can make it work: iOS refuses
+  to execute code Apple has not signed, and an APK is a different platform's format
+  entirely. That is why the <a href="ocean/">live ocean</a> above exists. It is the
+  same simulation running the same shaders, in a browser, because a browser is the
+  one way onto an iPhone that costs nothing and needs no computer. It is a preview
+  of the water, not the game: the native client remains the product.
 </p>
 
 <footer>

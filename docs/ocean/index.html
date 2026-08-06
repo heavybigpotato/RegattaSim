@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0B1F2A">
+<title>Blue Meridian - live ocean</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230B1F2A'/%3E%3Ccircle cx='16' cy='15' r='6' fill='%23F2A03D'/%3E%3Crect y='18' width='32' height='14' fill='%2312303F'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --deep: #0B1F2A;
+    --surface: rgba(18, 48, 63, 0.82);
+    --raised: #1B4557;
+    --text: #E8EEF2;
+    --muted: #9BB0BC;
+    --accent: #F2A03D;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; overflow: hidden;
+    background: var(--deep); color: var(--text);
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    overscroll-behavior: none;
+  }
+  #sea { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+
+  /* The brief is explicit that the interface must never hide the sea, so the
+     controls are a single translucent strip pinned to the bottom, inside the safe
+     area, where a thumb reaches. */
+  #panel {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 2;
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+    background: linear-gradient(to top, rgba(11,31,42,0.92), rgba(11,31,42,0));
+    display: flex; flex-direction: column; gap: 10px;
+    transition: opacity 0.25s ease;
+  }
+  #panel.hidden { opacity: 0; pointer-events: none; }
+  .row { display: flex; align-items: center; gap: 12px; }
+  .row label { width: 74px; color: var(--muted); font-size: 13px; flex: none; }
+  .row output {
+    width: 78px; text-align: right; flex: none;
+    font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;
+  }
+  input[type=range] {
+    flex: 1; -webkit-appearance: none; appearance: none; height: 34px;
+    background: transparent; margin: 0;
+  }
+  input[type=range]::-webkit-slider-runnable-track {
+    height: 3px; background: var(--raised); border-radius: 2px;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 26px; height: 26px; margin-top: -12px; border-radius: 50%;
+    background: var(--accent); border: none;
+  }
+  input[type=range]::-moz-range-track { height: 3px; background: var(--raised); border-radius: 2px; }
+  input[type=range]::-moz-range-thumb {
+    width: 26px; height: 26px; border-radius: 50%; background: var(--accent); border: none;
+  }
+
+  #hud {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 2;
+    padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
+    display: flex; justify-content: space-between; align-items: flex-start;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px; color: var(--muted);
+    text-shadow: 0 1px 3px rgba(0,0,0,0.6);
+    pointer-events: none;
+  }
+  #hud b { color: var(--text); font-weight: 600; }
+  #toggle {
+    position: fixed; right: 12px; bottom: calc(150px + env(safe-area-inset-bottom));
+    z-index: 3; width: 44px; height: 44px; border-radius: 22px;
+    background: var(--surface); border: 1px solid var(--raised);
+    color: var(--text); font-size: 17px; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #message {
+    position: fixed; inset: 0; z-index: 4; display: none;
+    align-items: center; justify-content: center; padding: 32px;
+    background: var(--deep); text-align: center;
+  }
+  #message div { max-width: 30rem; }
+  #message h1 { font-size: 20px; margin: 0 0 12px; }
+  #message p { color: var(--muted); margin: 0 0 10px; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<canvas id="sea"></canvas>
+
+<div id="hud">
+  <span><b id="hudHs">-</b> significant wave height</span>
+  <span><b id="hudFps">-</b> fps</span>
+</div>
+
+<button id="toggle" aria-label="Show or hide controls">☰</button>
+
+<div id="panel">
+  <div class="row">
+    <label for="wind">Wind</label>
+    <input type="range" id="wind" min="4" max="55" step="1" value="22">
+    <output id="windOut">22 kt</output>
+  </div>
+  <div class="row">
+    <label for="sun">Sun</label>
+    <input type="range" id="sun" min="-4" max="80" step="1" value="17">
+    <output id="sunOut">17°</output>
+  </div>
+  <div class="row">
+    <label for="swell">Swell</label>
+    <input type="range" id="swell" min="0" max="8" step="0.25" value="2.4">
+    <output id="swellOut">2.4 m</output>
+  </div>
+</div>
+
+<div id="message"><div>
+  <h1>This browser cannot run the ocean</h1>
+  <p id="messageText"></p>
+  <p>The simulation needs WebGL 2 with floating point render targets. On iOS that
+  means Safari 15 or later; on Android, Chrome 56 or later.</p>
+  <p><a href="../">Back to the showcase</a></p>
+</div></div>
+
+<script type="module">
+import { Ocean } from './ocean.js';
+import { seaState } from './spectrum.js';
+
+const KNOTS = 0.514444;
+const canvas = document.getElementById('sea');
+
+function fail(text) {
+  document.getElementById('messageText').textContent = text;
+  document.getElementById('message').style.display = 'flex';
+}
+
+let ocean;
+try {
+  ocean = new Ocean(canvas, {
+    // 128 is the brief's HIGH tier. Phones are fill-rate bound long before they
+    // are bound by the transform, and 256 buys detail below a pixel.
+    resolution: 128,
+    gridColumns: 176,
+    gridRows: 120,
+    sea: seaState({ windSpeed: 22 * KNOTS, swellHeight: 2.4 }),
+  });
+} catch (e) {
+  fail(e.message);
+  throw e;
+}
+
+// --- interaction ------------------------------------------------------------
+
+let dragging = false;
+let lastX = 0;
+let lastY = 0;
+
+canvas.addEventListener('pointerdown', (e) => {
+  dragging = true;
+  lastX = e.clientX;
+  lastY = e.clientY;
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (!dragging) return;
+  ocean.heading += (e.clientX - lastX) * 0.005;
+  ocean.pitch = Math.max(-1.2, Math.min(0.9, ocean.pitch - (e.clientY - lastY) * 0.005));
+  lastX = e.clientX;
+  lastY = e.clientY;
+});
+for (const ev of ['pointerup', 'pointercancel']) {
+  canvas.addEventListener(ev, () => { dragging = false; });
+}
+
+const wind = document.getElementById('wind');
+const sun = document.getElementById('sun');
+const swell = document.getElementById('swell');
+const windOut = document.getElementById('windOut');
+const sunOut = document.getElementById('sunOut');
+const swellOut = document.getElementById('swellOut');
+const hudHs = document.getElementById('hudHs');
+
+// Rebuilding the spectrum means regenerating h0 for every cascade, which is a
+// visible hitch. Debounce so dragging a slider stays smooth and the rebuild
+// happens once the finger settles.
+let rebuildTimer = null;
+function scheduleRebuild() {
+  windOut.textContent = `${wind.value} kt`;
+  sunOut.textContent = `${sun.value}°`;
+  swellOut.textContent = `${(+swell.value).toFixed(1)} m`;
+  ocean.sunElevation = (+sun.value * Math.PI) / 180;
+  clearTimeout(rebuildTimer);
+  rebuildTimer = setTimeout(() => {
+    ocean.setSeaState(seaState({
+      windSpeed: +wind.value * KNOTS,
+      swellHeight: +swell.value,
+    }));
+    hudHs.textContent = `${ocean.sea.significantWaveHeight.toFixed(1)} m`;
+  }, 140);
+}
+for (const el of [wind, sun, swell]) {
+  el.addEventListener('input', scheduleRebuild);
+}
+hudHs.textContent = `${ocean.sea.significantWaveHeight.toFixed(1)} m`;
+
+const panel = document.getElementById('panel');
+document.getElementById('toggle').addEventListener('click', () => {
+  panel.classList.toggle('hidden');
+});
+
+// --- frame loop -------------------------------------------------------------
+
+const hudFps = document.getElementById('hudFps');
+let last = performance.now();
+let frames = 0;
+let fpsClock = last;
+
+function frame(now) {
+  // Clamp the step: a backgrounded tab can hand back a delta of many seconds,
+  // which would jump the wave field and wipe the foam history in one go.
+  const dt = Math.min((now - last) / 1000, 0.1);
+  last = now;
+
+  try {
+    ocean.render(dt);
+  } catch (e) {
+    fail(e.message);
+    return;
+  }
+
+  frames++;
+  if (now - fpsClock > 500) {
+    hudFps.textContent = Math.round((frames * 1000) / (now - fpsClock));
+    frames = 0;
+    fpsClock = now;
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// Expose for the headless render check in CI.
+window.__ocean = ocean;
+</script>
+</body>
+</html>
