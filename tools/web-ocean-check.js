@@ -8,7 +8,9 @@
 //
 // Usage: node tools/web-ocean-check.js <url> <output.png> [frames]
 // Set CHROMIUM_PATH to use a browser that is already installed.
-const { chromium } = require('playwright');
+//
+// An ES module, because tools/package.json declares "type": "module".
+import { chromium } from 'playwright';
 
 (async () => {
   const url = process.argv[2];
