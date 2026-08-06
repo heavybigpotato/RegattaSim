@@ -43,6 +43,10 @@ piece, and it changes two technical choices —
 FFT ocean running in WebGL 2, using the *same shader sources* the native client
 compiles. Drag to look around; the sliders change wind, sun and swell.
 
+The site is published by the `pages` job in CI, which also switches Pages on for
+the repository the first time it runs on `main`. Nothing has to be clicked in
+repository settings.
+
 This exists because iOS cannot install an APK and Apple will not run unsigned
 code, so a browser is the only route onto an iPhone that costs nothing and needs
 no computer. Per §15 of the brief this is the showcase, not the game — the ban on
