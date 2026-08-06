@@ -15,6 +15,7 @@ import {
   seaState, cascadeSettings, initialSpectrum, butterflyPlan,
   omegaOf, quantiseForLoop, meanDomeLuminance,
 } from '../docs/ocean/spectrum.js';
+import { loadPolar, apparentWind, Boat } from '../docs/ocean/sailing.js';
 
 const expected = JSON.parse(readFileSync(process.argv[2] || 'java-spectrum.json', 'utf8'));
 
@@ -89,6 +90,47 @@ const plan = butterflyPlan(128);
   close(`meanDomeLuminance[${i}]`, meanDomeLuminance(elevation, 2.6),
     expected.meanDomeLuminance[i], 1e-9);
 });
+
+// --- sailing ----------------------------------------------------------------
+
+const KT = 0.514444;
+const polar = loadPolar('class40.csv');
+
+[[45, 12], [90, 8], [135, 20], [60, 17.5], [170, 6.5], [20, 12]].forEach(([twa, tws], i) => {
+  close(`polar[${twa}deg,${tws}kt]`,
+    polar.boatSpeed((twa * Math.PI) / 180, tws * KT), expected.polar[i], 1e-9);
+});
+
+[[12, 0, 8, Math.PI - Math.PI / 4], [10, 0.7, 6, 1.9], [8, 0, 8, 0], [14, 2.2, 3, -1.1]]
+  .forEach(([tws, toward, bs, hdg], i) => {
+    const aw = apparentWind(tws * KT, toward, bs * KT, hdg);
+    close(`apparentWind[${i}].speed`, aw.speed, expected.apparentWind[i][0], 1e-9);
+    close(`apparentWind[${i}].angle`, aw.angle, expected.apparentWind[i][1], 1e-9, 1e-12);
+    close(`apparentWind[${i}].trueAngle`, aw.trueAngle, expected.apparentWind[i][2], 1e-9, 1e-12);
+  });
+
+// The whole integration loop, not a single step: two minutes of sailing with helm
+// on over a known swell. Any drift in the polar, the apparent wind, the
+// accumulator or the attitude fit shows up here as a divergent position.
+{
+  const boat = new Boat(polar);
+  boat.x = 0;
+  boat.z = 0;
+  boat.heading = Math.PI - (50 * Math.PI) / 180;
+  boat.setRudder(0.25);
+  boat.setTrim(0.8);
+  const k = (2 * Math.PI) / 40;
+  const kx = k * Math.cos(0.3);
+  const kz = k * Math.sin(0.3);
+  const swell = (x, z) => 1.2 * Math.sin(kx * x + kz * z);
+  for (let i = 0; i < 2400; i++) {
+    boat.advance(0.05, 13.0 * KT, 0.0, swell);
+  }
+  const labels = ['x', 'z', 'heading', 'speed', 'heave', 'pitch', 'roll', 'windHeel'];
+  const actual = [boat.x, boat.z, boat.heading, boat.speed, boat.heave, boat.pitch,
+    boat.roll, boat.windHeel];
+  actual.forEach((v, i) => close(`boat.${labels[i]}`, v, expected.boat[i], 1e-6, 1e-9));
+}
 
 if (failures.length) {
   console.error(`FAIL: the web build has drifted from core in ${failures.length} place(s):`);

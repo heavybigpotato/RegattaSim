@@ -77,12 +77,13 @@
 <header>
   <h1>Blue Meridian</h1>
   <p class="tagline">A world sailing simulator for Android. The ocean comes first.</p>
-  <div class="status">Phase 1 &mdash; FFT ocean and sky. No boat yet.</div>
+  <div class="status">Phase 2 &mdash; FFT ocean and sky, with a boat sailing on it.</div>
 </header>
 
 <a class="live" href="ocean/">
   <span class="live-label">Open the live ocean</span>
-  <span class="live-note">Runs in the browser, on the phone you are holding. No install, no account.</span>
+  <span class="live-note">Steer a boat through it, in the browser, on the phone you are
+  holding. No install, no account.</span>
 </a>
 
 <h2>Where it is</h2>
@@ -144,8 +145,8 @@
   <tr><th>Phase</th><th>Content</th><th>State</th></tr>
   <tr><td class="num">0</td><td>Multi-module build, desktop and Android launchers, CI producing an APK</td><td class="done">done</td></tr>
   <tr><td class="num">1</td><td>The ocean: FFT cascades, sky, foam, post-processing</td><td class="done">done, polish remaining</td></tr>
-  <tr><td class="num">2</td><td>Sailing: hull on the surface, polars, apparent wind, deformable sails</td><td class="todo">next</td></tr>
-  <tr><td class="num">3</td><td>Live weather: GFS and WaveWatch III behind a provider interface</td><td class="todo">planned</td></tr>
+  <tr><td class="num">2</td><td>Sailing: hull on the surface, polars, apparent wind, heel, deformable sails</td><td class="done">done, sails still rigid</td></tr>
+  <tr><td class="num">3</td><td>Live weather: GFS and WaveWatch III behind a provider interface</td><td class="todo">next</td></tr>
   <tr><td class="num">4</td><td>Inshore multiplayer: 20&nbsp;Hz authoritative tick, starts, wind shadow</td><td class="todo">planned</td></tr>
   <tr><td class="num">5</td><td>Offshore: world map, isochrone routing, races that survive the app closing</td><td class="todo">planned</td></tr>
   <tr><td class="num">6</td><td>The 3D workshop: paint layers, liveries, rig and foil choices</td><td class="todo">planned</td></tr>
@@ -169,8 +170,11 @@
   to execute code Apple has not signed, and an APK is a different platform's format
   entirely. That is why the <a href="ocean/">live ocean</a> above exists. It is the
   same simulation running the same shaders, in a browser, because a browser is the
-  one way onto an iPhone that costs nothing and needs no computer. It is a preview
-  of the water, not the game: the native client remains the product.
+  one way onto an iPhone that costs nothing and needs no computer. The boat there
+  runs the same polar, the same apparent-wind maths and the same 120&nbsp;Hz step as
+  the native client, and CI compares a full two-minute trajectory between the two
+  so they cannot drift apart. It is still a preview, not the game: the native
+  client remains the product.
 </p>
 
 <footer>

@@ -37,7 +37,9 @@ class SailingBoatTest {
     @DisplayName("the boat settles onto its polar speed, and takes time to do it")
     void convergesToPolarSpeed() {
         SailingBoat b = boat();
-        // Close-hauled at 45 degrees on starboard.
+        // Close-hauled at 45 degrees on port: the wind blows toward +X so it
+        // arrives from 180, and a heading of 135 puts that 45 degrees off the
+        // port bow, which ApparentWind reports as a negative angle.
         b.setPosition(0, 0, Math.PI - Math.toRadians(45));
 
         sail(b, 1.0, 12);
@@ -98,6 +100,27 @@ class SailingBoatTest {
         double rate = Math.abs(com.bluemeridian.core.math.Mth.wrapPi(b.heading() - before));
         assertTrue(rate > Math.toRadians(5) && rate < Math.toRadians(30),
                 "one second of full helm turned " + Math.toDegrees(rate) + " degrees");
+    }
+
+    @Test
+    @DisplayName("which tack the boat is on follows from its heading, not from hope")
+    void tackFollowsFromHeading() {
+        // Worth pinning explicitly, because a heading is not a tack and reading one
+        // off the other by eye is how the comments in this file were wrong before.
+        // The wind blows toward +X, so it arrives from 180 degrees. Headings run
+        // from +X toward +Z and +Z is to port, so a heading *below* 180 puts the
+        // wind on the port bow and a heading above it puts the wind to starboard.
+        SailingBoat port = boat();
+        port.setPosition(0, 0, Math.PI - Math.toRadians(45));
+        port.advance(0.05, 12 * KNOTS, WIND_TOWARD, WaveSurface.FLAT, 0);
+        assertEquals(-45, Math.toDegrees(port.wind().trueAngle), 1e-9);
+        assertTrue(!port.wind().isStarboardTack(), "heading 135 is port tack");
+
+        SailingBoat starboard = boat();
+        starboard.setPosition(0, 0, -(Math.PI - Math.toRadians(45)));
+        starboard.advance(0.05, 12 * KNOTS, WIND_TOWARD, WaveSurface.FLAT, 0);
+        assertEquals(45, Math.toDegrees(starboard.wind().trueAngle), 1e-9);
+        assertTrue(starboard.wind().isStarboardTack(), "heading -135 is starboard tack");
     }
 
     @Test
@@ -219,21 +242,82 @@ class SailingBoatTest {
         acrossIt.setPosition(0, 0, Math.PI / 2);    // bow along the crest
         acrossIt.advance(0.05, 1e-6, WIND_TOWARD, swell, 0);
 
-        assertTrue(Math.abs(intoIt.pitch()) > Math.abs(intoIt.roll()) + 0.01,
+        // Compared against the wave-induced part only: the rig's heel is a constant
+        // offset on the roll and would otherwise swamp what this test is measuring.
+        double intoItWaveRoll = intoIt.roll() - intoIt.windHeel();
+        double acrossItWaveRoll = acrossIt.roll() - acrossIt.windHeel();
+        assertTrue(Math.abs(intoIt.pitch()) > Math.abs(intoItWaveRoll) + 0.01,
                 "pointing along the slope must pitch, not heel");
-        assertTrue(Math.abs(acrossIt.roll()) > Math.abs(acrossIt.pitch()) + 0.01,
+        assertTrue(Math.abs(acrossItWaveRoll) > Math.abs(acrossIt.pitch()) + 0.01,
                 "pointing along the crest must heel, not pitch");
     }
 
     @Test
-    @DisplayName("flat water means a level boat")
-    void flatWaterIsLevel() {
+    @DisplayName("flat water means no wave motion, but the boat still heels to its sails")
+    void flatWaterLeavesOnlyTheHeel() {
         SailingBoat b = boat();
         b.setPosition(3, -7, 1.1);
         sail(b, 5, 10);
         assertEquals(0.0, b.heave(), 1e-6);
         assertEquals(0.0, b.pitch(), 1e-9);
-        assertEquals(0.0, b.roll(), 1e-9);
+        // Flat water contributes nothing to the roll, so whatever is left is the rig.
+        assertEquals(b.windHeel(), b.roll(), 1e-9);
+    }
+
+    @Test
+    @DisplayName("the boat heels away from the wind, harder as the breeze builds")
+    void heelFollowsThePressure() {
+        SailingBoat starboardTack = boat();
+        starboardTack.setPosition(0, 0, -(Math.PI - Math.toRadians(50)));
+        sail(starboardTack, 120, 14);
+        // Wind over the starboard side puts the port rail down, and roll is
+        // measured starboard-down, so a starboard-tack heel is negative.
+        assertTrue(starboardTack.windHeel() < Math.toRadians(-10),
+                "close-hauled on starboard in 14 knots should be well heeled, got "
+                        + Math.toDegrees(starboardTack.windHeel()));
+
+        SailingBoat portTack = boat();
+        portTack.setPosition(0, 0, Math.PI - Math.toRadians(50));
+        sail(portTack, 120, 14);
+        assertEquals(-starboardTack.windHeel(), portTack.windHeel(), Math.toRadians(0.5),
+                "the two tacks must mirror each other");
+
+        SailingBoat breezy = boat();
+        breezy.setPosition(0, 0, -(Math.PI - Math.toRadians(50)));
+        sail(breezy, 120, 22);
+        assertTrue(breezy.windHeel() < starboardTack.windHeel(),
+                "more wind must mean more heel");
+        assertTrue(breezy.windHeel() > -SailingBoat.HullShape.class40().maximumHeel - 1e-9,
+                "but never past the angle the boat rounds up at");
+    }
+
+    @Test
+    @DisplayName("running dead downwind is upright; the same breeze on the beam is not")
+    void onlyTheAthwartshipsComponentHeels() {
+        // Wind blows toward +X, so a boat heading +X is running away from it.
+        SailingBoat running = boat();
+        running.setPosition(0, 0, 0);
+        sail(running, 120, 18);
+        assertEquals(0.0, running.windHeel(), Math.toRadians(2),
+                "dead downwind there is nothing to heel the boat, got "
+                        + Math.toDegrees(running.windHeel()));
+
+        SailingBoat reaching = boat();
+        reaching.setPosition(0, 0, Math.PI / 2);
+        sail(reaching, 120, 18);
+        assertTrue(Math.abs(reaching.windHeel()) > Math.toRadians(15),
+                "a beam reach in 18 knots should have the boat well over, got "
+                        + Math.toDegrees(reaching.windHeel()));
+    }
+
+    @Test
+    @DisplayName("head to wind the boat stands up, because there is no drive to lean on")
+    void inIronsTheBoatIsUpright() {
+        SailingBoat b = boat();
+        b.setPosition(0, 0, Math.PI);
+        sail(b, 90, 16);
+        assertEquals(0.0, b.windHeel(), Math.toRadians(2),
+                "in irons the boat should be upright, got " + Math.toDegrees(b.windHeel()));
     }
 
     @Test

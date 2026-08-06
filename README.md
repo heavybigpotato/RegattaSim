@@ -3,8 +3,8 @@
 A world sailing simulator for Android, in Java. **The ocean comes first** — if the
 water is not convincing, nothing else matters.
 
-Current state: **Phase 0 and Phase 1 are implemented.** There is a sea and a sky.
-There is no boat yet.
+Current state: **Phases 0, 1 and 2 are implemented.** There is a sea, a sky, and a
+boat sailing on it — in the native client and in the browser showcase alike.
 
 ![25 knots, crossed sea, low sun](docs/images/02-gale-crossed-sea.png)
 
@@ -21,6 +21,7 @@ There is no boat yet.
 | **Sky** | Preetham, evaluated per pixel and reused for water reflections. Sky-driven auto-exposure. |
 | **Post** | HDR half-float target, thresholded bloom, ACES tone mapping, manual sRGB encode. |
 | **Physics surface** | `CpuOceanSurface` runs the same spectrum and butterfly schedule on the CPU at physics resolution, so a boat can float on the water that is drawn — and a server can replay it without a GPU. |
+| **Sailing** | Apparent wind from the vector subtraction, a polar diagram interpolated bicubically in both axes, a fixed 120 Hz step, inertia on the speed, a rudder that needs flow over it, heel from the athwartships wind pressure, and heave, pitch and roll read off the wave surface. |
 | **Build** | Gradle multi-module, desktop launcher, Android launcher, GitHub Actions producing an installable APK on every push. |
 | **Web showcase** | The same ocean in WebGL 2 from the same shader sources, so it can be seen on a device that cannot install an APK. |
 
@@ -41,7 +42,11 @@ piece, and it changes two technical choices —
 
 **[Open the live ocean](https://heavybigpotato.github.io/RegattaSim/ocean/)** — the
 FFT ocean running in WebGL 2, using the *same shader sources* the native client
-compiles. Drag to look around; the sliders change wind, sun and swell.
+compiles, with a boat sailing on it. Drag to look around; the sliders change wind,
+sun and swell, and the helm steers. The boat runs the same polar, the same
+apparent-wind maths and the same 120 Hz step as `core`, transliterated into
+`docs/ocean/sailing.js` — and `tools/web-parity-check.js` evaluates both and
+compares a full two-minute trajectory, so the two cannot drift apart unnoticed.
 
 The site is published by the `pages` job in CI, which also switches Pages on for
 the repository the first time it runs on `main`. Nothing has to be clicked in
@@ -193,18 +198,27 @@ judgement can be made rather than asserted. My own read: the wave *shape* and th
 crossed-sea structure hold up; the shading is still flatter than a photograph,
 mostly for want of screen-space reflections and a sharper scattering term.
 
-**Not started.** Everything from Phase 2 on: boat, sails, polars, weather service,
-netcode, workshop. The module list in the brief includes `shared-protocol`,
-`server-realtime`, `server-api`, `weather-service` and `tools` — those directories
-do not exist yet, because empty modules are placeholders wearing a costume.
+**Not started.** Everything from Phase 3 on: courses, marks, race committee,
+weather service, netcode, workshop. The module list in the brief includes
+`shared-protocol`, `server-realtime`, `server-api` and `weather-service` — those
+directories do not exist yet, because empty modules are placeholders wearing a
+costume.
+
+**The hull is generated, not modelled.** `docs/ocean/hull.js` lofts a 40-footer
+from a handful of curves — stations, a chine, a crowned deck, a coachroof, a rig
+and two sails. It reads as the right kind of boat and it costs no asset pipeline,
+which is the point until Phase 6 brings one. It is not a scan of any real yacht
+and does not carry any class's design.
 
 **Approximations, labelled.** The sun's colour is a two-term extinction fit, not a
 spectral radiance model. Whitecap coverage is scaled by wind speed with a tuned
 coefficient. The foam Jacobian threshold sits at the onset of compression rather
 than at true folding, because true folding produces almost no foam at realistic
-choppiness. Boat polars, when they arrive, will be derived from published
-performance data for real classes and will be approximations — they will never be
-presented as official.
+choppiness. The shipped polar, `core/src/main/resources/polars/class40.csv`, is
+shaped from published performance figures for the class and is **approximate and
+unofficial** — it says so in its own header, and no measured or class-issued
+polar is claimed anywhere. Heel is a saturating function of the athwartships wind
+pressure with two tuned constants, not a righting-moment calculation.
 
 **Undecided.** No licence file yet: "free to play" and "open source" are different
 choices, and that one is yours to make.

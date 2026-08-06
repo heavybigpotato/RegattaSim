@@ -128,7 +128,7 @@ jobs:
             curl -sf http://localhost:8712/ocean/ >/dev/null && break
             sleep 1
           done
-          node tools/web-ocean-check.js http://localhost:8712/ocean/ web-ocean.png 150
+          node tools/web-ocean-check.js http://localhost:8712/ocean/ web-ocean.png 300
 
       - name: Upload the WebGL screenshot
         if: always()

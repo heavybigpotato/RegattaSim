@@ -48,6 +48,8 @@ public final class SailingBoat {
     private double heave;
     private double pitch;
     private double roll;
+    /** Heel from the rig, radians, separate from the roll the waves impose. */
+    private double windHeel;
 
     /** Helm demand in [-1, 1]; negative turns to port. */
     private double rudder;
@@ -75,18 +77,34 @@ public final class SailingBoat {
         public final double accelerationTime;
         /** Maximum rate of turn at full helm and full speed, radians per second. */
         public final double maximumTurnRate;
+        /**
+         * Heel the boat settles at when the rig is fully pressed, radians.
+         *
+         * <p>Beyond this a monohull is not sailing faster, it is sailing sideways:
+         * the keel loses its bite, the rudder ventilates and the boat rounds up.
+         * Racing crews live just under this number.
+         */
+        public final double maximumHeel;
+        /**
+         * Wind pressure, in m^2/s^2, at which the boat reaches half its maximum
+         * heel. Sets stiffness: a heavier or beamier boat needs a larger number.
+         */
+        public final double heelReference;
 
         public HullShape(double length, double beam, double accelerationTime,
-                double maximumTurnRate) {
+                double maximumTurnRate, double maximumHeel, double heelReference) {
             this.length = length;
             this.beam = beam;
             this.accelerationTime = accelerationTime;
             this.maximumTurnRate = maximumTurnRate;
+            this.maximumHeel = maximumHeel;
+            this.heelReference = heelReference;
         }
 
         /** A 40 ft offshore monohull, matching the shipped polar. */
         public static HullShape class40() {
-            return new HullShape(12.18, 4.50, 9.0, Math.toRadians(22));
+            return new HullShape(12.18, 4.50, 9.0, Math.toRadians(22),
+                    Math.toRadians(25), 33.6);
         }
     }
 
@@ -159,6 +177,34 @@ public final class SailingBoat {
 
         x += speed * Math.cos(heading) * STEP;
         z += speed * Math.sin(heading) * STEP;
+
+        // Heel lags the wind that causes it. A boat carries its heel through a
+        // lull and takes a moment to stand up in a tack, and that lag is most of
+        // what a tack looks like from outside: the boat comes upright, hangs, then
+        // lies down on the other side.
+        double rollRate = 1.0 - Math.exp(-STEP / HEEL_TIME_CONSTANT);
+        windHeel += (targetHeel() - windHeel) * rollRate;
+    }
+
+    /** Time constant for heel to follow the wind pressure, seconds. */
+    private static final double HEEL_TIME_CONSTANT = 1.6;
+
+    /**
+     * The heel the rig is asking for right now, radians.
+     *
+     * <p>Only the athwartships component of the apparent wind heels a boat, which
+     * is why running dead downwind is upright and why a beam reach in the same
+     * breeze has the rail under. The saturation matters as much as the slope: past
+     * a certain pressure a monohull stops heeling further and starts rounding up,
+     * so the response has to flatten rather than keep going.
+     */
+    private double targetHeel() {
+        double side = Math.sin(wind.angle);
+        double pressure = wind.speed * wind.speed * Math.abs(side);
+        double magnitude = hull.maximumHeel * Math.tanh(pressure / hull.heelReference);
+        // Wind from starboard lays the boat over to port, and roll is measured
+        // starboard-down, so a starboard-tack heel is negative.
+        return -Math.signum(side) * magnitude;
     }
 
     /**
@@ -181,8 +227,9 @@ public final class SailingBoat {
         heave = 0.25 * (bow + stern + starboard + port);
         // Bow up is positive pitch.
         pitch = Math.atan2(bow - stern, hull.length);
-        // Starboard down is positive roll, matching the sign of a starboard-tack heel.
-        roll = Math.atan2(starboard - port, hull.beam);
+        // Starboard down is positive roll. The wave slope tips the boat about the
+        // angle the rig is already holding it at, so the two add.
+        roll = Math.atan2(starboard - port, hull.beam) + windHeel;
     }
 
     // --- state --------------------------------------------------------------
@@ -218,9 +265,14 @@ public final class SailingBoat {
         return pitch;
     }
 
-    /** Starboard-down angle, radians. */
+    /** Starboard-down angle, radians: wave slope plus the heel from the rig. */
     public double roll() {
         return roll;
+    }
+
+    /** The part of the roll the sails are responsible for, radians. */
+    public double windHeel() {
+        return windHeel;
     }
 
     public ApparentWind wind() {

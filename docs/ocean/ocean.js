@@ -17,6 +17,7 @@
 
 import { SHADERS } from './shaders.js';
 import * as S from './spectrum.js';
+import { buildHull, buildSails } from './hull.js';
 
 const HEADER = '#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\n';
 
@@ -87,6 +88,58 @@ function mat4Invert(m) {
   det = 1 / det;
   for (let i = 0; i < 16; i++) inv[i] *= det;
   return inv;
+}
+
+/**
+ * How far off dead astern the chase camera sits, radians. Positive swings it
+ * toward the port quarter, since headings run from +X toward +Z and +Z is port.
+ */
+const CHASE_QUARTER = 0.55;
+
+/**
+ * Places the boat: translate to its position, rotate to its heading, then apply
+ * the pitch and roll the physics read off the wave surface.
+ *
+ * Heading rotates about +Y from +X toward +Z. Pitch is bow-up about the
+ * port-starboard axis, roll is starboard-down about the fore-and-aft axis - the
+ * same senses SailingBoat reports, so a boat climbing a wave face lifts its bow
+ * on screen rather than burying it.
+ */
+function boatModelMatrix(x, y, z, heading, pitch, roll) {
+  const ch = Math.cos(heading);
+  const sh = Math.sin(heading);
+  const cp = Math.cos(pitch);
+  const sp = Math.sin(pitch);
+  const cr = Math.cos(roll);
+  const sr = Math.sin(roll);
+
+  // Local basis: forward is +X, up is +Y, port is +Z.
+  // Pitch lifts forward; roll drops the starboard side, which is -Z.
+  const fwd = [cp, sp, 0];
+  const up = [-sp * cr, cp * cr, -sr];
+  const port = [-sp * -sr, cp * -sr, cr];
+
+  // Rotate each local axis into the world by the heading.
+  const toWorld = (v) => [v[0] * ch - v[2] * sh, v[1], v[0] * sh + v[2] * ch];
+  const F = toWorld(fwd);
+  const U = toWorld(up);
+  const P = toWorld(port);
+
+  return new Float32Array([
+    F[0], F[1], F[2], 0,
+    U[0], U[1], U[2], 0,
+    P[0], P[1], P[2], 0,
+    x, y, z, 1,
+  ]);
+}
+
+/** Inverse-transpose of the model's upper 3x3, for normals. */
+function normalMatrix(m) {
+  return new Float32Array([
+    m[0], m[1], m[2],
+    m[4], m[5], m[6],
+    m[8], m[9], m[10],
+  ]);
 }
 
 const cross = (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
@@ -224,6 +277,10 @@ export class Ocean {
 
     this.time = options.time ?? 0;
     this.exposure = 1;
+    /** Attach a Boat from sailing.js to switch to chase view and draw a hull. */
+    this.boat = null;
+    /** Extra yaw applied to the chase camera, so the player can look around. */
+    this.orbit = 0;
 
     const quadAttributes = ['a_position', 'a_texCoord0'];
     this.programs = {
@@ -234,10 +291,13 @@ export class Ocean {
       surface: program(gl, 'ocean_surface.vert', 'ocean_surface.frag', ['a_position']),
       sky: program(gl, 'sky.vert', 'sky.frag', quadAttributes),
       tonemap: program(gl, 'fullscreen.vert', 'post_tonemap.frag', quadAttributes),
+      boat: program(gl, 'boat.vert', 'boat.frag',
+        ['a_position', 'a_normal', 'a_material']),
     };
 
     this.buildQuad();
     this.buildGrid();
+    this.buildBoat();
     this.setSeaState(options.sea || S.seaState({}));
     this.resize();
   }
@@ -301,6 +361,83 @@ export class Ocean {
     gl.bindVertexArray(null);
   }
 
+  /** Uploads the generated hull and an initial mainsail. */
+  buildBoat() {
+    const gl = this.gl;
+    this.hullGeometry = buildHull();
+    this.boatMeshes = {
+      hull: this.uploadMesh(this.hullGeometry),
+      sail: this.uploadMesh(buildSails(this.hullGeometry, 0.35)),
+    };
+    this.sailSheetAngle = 0.35;
+  }
+
+  uploadMesh(geometry) {
+    const gl = this.gl;
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+
+    const attribute = (index, data, size) => {
+      const buffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(index);
+      gl.vertexAttribPointer(index, size, gl.FLOAT, false, 0, 0);
+      return buffer;
+    };
+    attribute(0, geometry.positions, 3);
+    attribute(1, geometry.normals, 3);
+    attribute(2, geometry.materials, 1);
+
+    const ibo = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, geometry.indices, gl.STATIC_DRAW);
+    gl.bindVertexArray(null);
+    return { vao, count: geometry.indices.length };
+  }
+
+  /** Rebuilds the mainsail when the sheet has moved enough to be worth it. */
+  setSheetAngle(angle) {
+    if (Math.abs(angle - this.sailSheetAngle) < 0.02) return;
+    this.sailSheetAngle = angle;
+    const gl = this.gl;
+    gl.deleteVertexArray(this.boatMeshes.sail.vao);
+    this.boatMeshes.sail = this.uploadMesh(buildSails(this.hullGeometry, angle));
+  }
+
+  /**
+   * Draws the boat, if one has been attached. `boat` is a Boat from sailing.js;
+   * the renderer only reads its state and never advances it.
+   */
+  drawBoat(cam, sun, sunColour) {
+    if (!this.boat) return;
+    const gl = this.gl;
+    const p = this.programs.boat;
+    gl.useProgram(p);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+    // The sail is a membrane and the hull is closed, but a hull heeled far enough
+    // shows its underside, so nothing is culled.
+    gl.disable(gl.CULL_FACE);
+
+    const model = boatModelMatrix(
+      this.boat.x, this.boat.heave, this.boat.z,
+      this.boat.heading, this.boat.pitch, this.boat.roll);
+
+    gl.uniformMatrix4fv(p.u.u_viewProjection, false, cam.combined);
+    gl.uniformMatrix4fv(p.u.u_model, false, model);
+    gl.uniformMatrix3fv(p.u.u_normalMatrix, false, normalMatrix(model));
+    gl.uniform3fv(p.u.u_cameraPosition, cam.eye);
+    gl.uniform3fv(p.u.u_sunDirection, sun);
+    gl.uniform3fv(p.u.u_sunColour, sunColour);
+    gl.uniform1f(p.u.u_turbidity, this.turbidity);
+
+    for (const mesh of [this.boatMeshes.hull, this.boatMeshes.sail]) {
+      gl.bindVertexArray(mesh.vao);
+      gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_INT, 0);
+    }
+  }
+
   setSeaState(sea) {
     const gl = this.gl;
     this.sea = sea;
@@ -313,6 +450,11 @@ export class Ocean {
     const n = this.resolution;
     const settings = S.cascadeSettings(n, this.patchSizes);
     this.cascadeSettings = settings;
+    // The CPU field the boat floats on: same spectrum, same seeds, same band
+    // limits as the renderer, on a coarse grid. Two cascades of three - the
+    // finest is 16 m of capillary chop that a 12 m hull cannot feel, and it is
+    // three quarters of the cost.
+    this.waveField = new S.WaveField(sea, settings, 32, 2);
 
     this.cascades = this.patchSizes.map((patch, i) => ({
       patch,
@@ -386,8 +528,19 @@ export class Ocean {
   }
 
   /** Advances every cascade to the given time. */
+  /**
+   * Surface elevation the boat floats on. Backed by the CPU field rather than a
+   * GPU readback, which would stall the pipeline every frame.
+   */
+  surfaceHeightAt(worldX, worldZ) {
+    return this.waveField ? this.waveField.heightAt(worldX, worldZ) : 0;
+  }
+
   simulate(time, deltaTime) {
     const gl = this.gl;
+    // Keep the CPU field in step with the GPU one, so the hull and the drawn
+    // surface never disagree about where the water is.
+    this.waveField.update(time);
     gl.disable(gl.DEPTH_TEST);
     gl.disable(gl.BLEND);
     gl.disable(gl.CULL_FACE);
@@ -467,6 +620,9 @@ export class Ocean {
   }
 
   camera() {
+    if (this.boat) {
+      return this.chaseCamera();
+    }
     const eye = [0, this.eyeHeight, 0];
     const dir = [
       Math.cos(this.pitch) * Math.cos(this.heading),
@@ -475,6 +631,43 @@ export class Ocean {
     ];
     const aspect = this.canvas.width / this.canvas.height;
     const proj = mat4Perspective((60 * Math.PI) / 180, aspect, 0.15, 60000);
+    const view = mat4LookAt(eye, dir, [0, 1, 0]);
+    const combined = mat4Multiply(proj, view);
+    return { eye, dir, combined, inverse: mat4Invert(combined) };
+  }
+
+  /**
+   * A camera trailing the boat.
+   *
+   * The heading it follows is smoothed rather than taken directly. A camera
+   * welded to the bow makes the sea appear to swing around a stationary boat,
+   * which reads as the world moving rather than the boat turning, and is why
+   * chase cameras lag: the lag is the sensation of turning.
+   */
+  chaseCamera() {
+    const b = this.boat;
+    if (this.smoothedHeading === undefined) this.smoothedHeading = b.heading;
+    const error = Math.atan2(Math.sin(b.heading - this.smoothedHeading),
+                             Math.cos(b.heading - this.smoothedHeading));
+    this.smoothedHeading += error * 0.04;
+
+    const back = this.chaseDistance ?? 26;
+    const height = this.chaseHeight ?? 7.5;
+    // Off the quarter rather than dead astern. From directly behind, a 12 m hull
+    // foreshortens into a wedge and the sail is edge-on; a quarter view shows the
+    // length of one and the camber of the other, which is why every photograph of
+    // a boat under sail is taken from roughly here.
+    const yaw = this.smoothedHeading + this.orbit + CHASE_QUARTER;
+    const eye = [
+      b.x - Math.cos(yaw) * back,
+      b.heave + height,
+      b.z - Math.sin(yaw) * back,
+    ];
+    const target = [b.x, b.heave + 3.5, b.z];
+    const dir = normalise([target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]]);
+
+    const aspect = this.canvas.width / this.canvas.height;
+    const proj = mat4Perspective((55 * Math.PI) / 180, aspect, 0.2, 60000);
     const view = mat4LookAt(eye, dir, [0, 1, 0]);
     const combined = mat4Multiply(proj, view);
     return { eye, dir, combined, inverse: mat4Invert(combined) };
@@ -641,6 +834,8 @@ export class Ocean {
       gl.bindVertexArray(this.grid);
       gl.drawElements(gl.TRIANGLES, this.gridIndexCount, gl.UNSIGNED_INT, 0);
     }
+
+    this.drawBoat(cam, sun, sunColour);
 
     // Resolve to the canvas.
     {
