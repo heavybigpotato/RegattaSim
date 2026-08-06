@@ -1,0 +1,35 @@
+# Blue Meridian polar table - 40 ft offshore monohull, Class40-like
+#
+# APPROXIMATE AND UNOFFICIAL. These numbers are hand-built to be physically
+# plausible for a 40 ft, ~4.5 t offshore racer: they respect the shape a real
+# polar has - a no-go zone inside about 38 degrees, best VMG upwind near 42-45,
+# a reaching bulge that moves aft as the breeze builds, and a running speed well
+# below beam-reaching speed. The deep angles fall away hard in light air and hold
+# on in breeze on purpose: that is what makes the downwind VMG optimum sit around
+# 140 degrees in 8 knots and soak past 160 in 25, which is how these boats are
+# actually sailed. They are NOT measured, NOT from any class
+# association, and NOT to be presented as a real boat's performance. Replacing
+# this file with a properly derived VPP is a task in its own right; the format
+# below is what that VPP has to be exported into.
+#
+# Rows are true wind angle in degrees, columns are true wind speed in knots.
+# Cells are boat speed through the water in knots. Zero means the boat cannot
+# make way at that angle.
+twa\tws,4,6,8,10,12,14,16,20,25,30
+0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+30,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+35,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+40,2.8,4.2,5.2,6.1,6.7,7.2,7.5,8.0,8.2,8.0
+45,3.1,4.6,5.7,6.5,7.2,7.7,8.0,8.5,8.7,8.5
+50,3.3,4.9,6.0,6.8,7.5,8.0,8.4,8.9,9.1,9.0
+60,3.6,5.3,6.5,7.3,8.0,8.5,8.9,9.4,9.7,9.8
+70,3.8,5.6,6.8,7.7,8.4,8.9,9.3,9.9,10.4,10.8
+80,3.9,5.8,7.0,8.0,8.7,9.2,9.7,10.6,11.4,12.0
+90,4.0,5.9,7.1,8.2,9.0,9.6,10.2,11.8,13.0,13.8
+100,4.0,6.0,7.2,8.5,9.4,10.2,11.0,13.2,15.0,16.0
+110,3.9,6.0,7.3,8.8,9.8,10.9,12.0,14.5,16.8,18.0
+120,3.8,5.9,7.2,8.9,10.0,11.4,12.8,15.2,17.5,19.0
+135,3.5,5.5,6.9,8.5,9.7,11.2,12.7,15.2,17.4,19.0
+150,2.7,4.3,5.4,7.0,8.4,10.0,11.6,14.4,16.6,18.2
+165,2.1,3.4,4.4,5.9,7.3,8.9,10.4,13.0,15.2,16.8
+180,1.9,3.1,4.0,5.5,6.9,8.4,9.8,12.2,14.2,15.8

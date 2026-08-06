@@ -60,16 +60,23 @@ public final class Mth {
     /**
      * Wraps an angle in radians into [-PI, PI).
      *
-     * <p>Takes and returns a float because its callers are shading and direction
-     * code where float is the natural width; the arithmetic itself is done in
-     * double so the constants stay exact.
+     * <p>The double overload is the one the physics uses. The float overload exists
+     * for shading and direction code where float is the natural width, and it
+     * simply narrows the double result - a float parameter in a double pipeline
+     * silently costs about 1e-5 of a degree, which is enough to make an exact
+     * assertion about a beam reach fail.
      */
-    public static float wrapPi(float radians) {
+    public static double wrapPi(double radians) {
         double r = (radians + PI) % TAU;
         if (r < 0.0) {
             r += TAU;
         }
-        return (float) (r - PI);
+        return r - PI;
+    }
+
+    /** Float convenience overload; see {@link #wrapPi(double)}. */
+    public static float wrapPi(float radians) {
+        return (float) wrapPi((double) radians);
     }
 
     /** Wraps an angle in degrees into [0, 360). */
