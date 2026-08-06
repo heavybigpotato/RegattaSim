@@ -1,0 +1,276 @@
+package com.bluemeridian.core.sailing;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import com.bluemeridian.core.ocean.WaveSurface;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+
+/**
+ * The brief's acceptance test for this phase is that beating and gybing "feel
+ * right" and that the boat visibly answers every wave. Feel is not something a
+ * test can assert, but the things that would <em>stop</em> it feeling right are:
+ * a boat that reaches its polar instantly, one that pivots on the spot, one that
+ * steers while stopped, one that ignores the sea it is sitting in.
+ */
+class SailingBoatTest {
+
+    private static final double KNOTS = 0.514444;
+    private static final PolarDiagram POLAR = PolarDiagram.fromClasspath("polars/class40.csv");
+    /** Wind blowing toward +X, so it arrives from -X. */
+    private static final double WIND_TOWARD = 0.0;
+
+    private static SailingBoat boat() {
+        return new SailingBoat(POLAR, SailingBoat.HullShape.class40());
+    }
+
+    /** Runs the boat for a while in flat water and returns it. */
+    private static SailingBoat sail(SailingBoat b, double seconds, double twsKnots) {
+        for (double t = 0; t < seconds; t += 0.05) {
+            b.advance(0.05, twsKnots * KNOTS, WIND_TOWARD, WaveSurface.FLAT, t);
+        }
+        return b;
+    }
+
+    @Test
+    @DisplayName("the boat settles onto its polar speed, and takes time to do it")
+    void convergesToPolarSpeed() {
+        SailingBoat b = boat();
+        // Close-hauled at 45 degrees on starboard.
+        b.setPosition(0, 0, Math.PI - Math.toRadians(45));
+
+        sail(b, 1.0, 12);
+        double after1s = b.speedKnots();
+        sail(b, 59.0, 12);
+        double after60s = b.speedKnots();
+
+        double target = POLAR.boatSpeedKnots(Math.toRadians(45), 12 * KNOTS);
+        assertTrue(after1s < target * 0.3,
+                "a boat does not reach its polar in one second: " + after1s + " of " + target);
+        assertEquals(target, after60s, target * 0.02,
+                "but it should be there after a minute: " + after60s + " vs " + target);
+    }
+
+    @Test
+    @DisplayName("head to wind, the boat stops")
+    void inIronsTheBoatStops() {
+        SailingBoat b = boat();
+        b.setPosition(0, 0, Math.PI);   // bow straight into the wind
+        sail(b, 60, 12);
+        assertTrue(b.speedKnots() < 0.5,
+                "pointing at the wind should stop the boat, got " + b.speedKnots() + " kt");
+    }
+
+    @Test
+    @DisplayName("a stopped boat cannot steer, which is what being stuck in irons means")
+    void steerageRequiresWayOn() {
+        SailingBoat b = boat();
+        b.setPosition(0, 0, Math.PI);
+        b.setRudder(1.0);
+        double before = b.heading();
+        // Two seconds of full helm from a standstill, head to wind.
+        for (double t = 0; t < 2.0; t += 0.05) {
+            b.advance(0.05, 12 * KNOTS, WIND_TOWARD, WaveSurface.FLAT, t);
+        }
+        // Headings must be compared as angles. This boat starts at exactly PI,
+        // which wrapPi represents as -PI, so a raw subtraction reads a stationary
+        // boat as having spun through 360 degrees.
+        double turned = Math.abs(
+                com.bluemeridian.core.math.Mth.wrapPi(b.heading() - before));
+        assertTrue(turned < Math.toRadians(2),
+                "a stopped boat turned " + Math.toDegrees(turned) + " degrees on full helm");
+    }
+
+    @Test
+    @DisplayName("with way on, full helm turns the boat at a bounded rate")
+    void turnRateIsBounded() {
+        SailingBoat b = boat();
+        b.setPosition(0, 0, Math.PI / 2);       // beam reach, plenty of speed
+        sail(b, 60, 14);
+        assertTrue(b.speedKnots() > 5, "needs way on first, got " + b.speedKnots());
+
+        b.setRudder(1.0);
+        double before = b.heading();
+        for (double t = 0; t < 1.0; t += 0.05) {
+            b.advance(0.05, 14 * KNOTS, WIND_TOWARD, WaveSurface.FLAT, t);
+        }
+        double rate = Math.abs(com.bluemeridian.core.math.Mth.wrapPi(b.heading() - before));
+        assertTrue(rate > Math.toRadians(5) && rate < Math.toRadians(30),
+                "one second of full helm turned " + Math.toDegrees(rate) + " degrees");
+    }
+
+    @Test
+    @DisplayName("helm sign matches the documented convention: negative is to port")
+    void helmSignIsCorrect() {
+        // Starboard is 90 degrees clockwise from the bow, and the hull's own
+        // starboard sample point is at (sin, -cos) of the heading - so a starboard
+        // turn must move the bow toward that side. This caught a real sign error:
+        // the helm was inverted, so what looked like a tack was actually a gybe,
+        // and the boat came out of it faster instead of slower.
+        SailingBoat b = boat();
+        b.setPosition(0, 0, Math.PI / 2);
+        sail(b, 60, 14);
+
+        double before = b.heading();
+        b.setRudder(-1.0);                 // helm to port
+        for (double t = 0; t < 2.0; t += 0.05) {
+            b.advance(0.05, 14 * KNOTS, WIND_TOWARD, WaveSurface.FLAT, t);
+        }
+        double delta = com.bluemeridian.core.math.Mth.wrapPi(b.heading() - before);
+        assertTrue(delta > 0,
+                "port helm must increase the heading in this frame, got "
+                        + Math.toDegrees(delta) + " degrees");
+    }
+
+    @Test
+    @DisplayName("a tack costs speed and the boat has to rebuild it")
+    void tackingCostsSpeed() {
+        SailingBoat b = boat();
+        b.setPosition(0, 0, Math.PI - Math.toRadians(45));
+        sail(b, 90, 12);
+        double before = b.speedKnots();
+
+        // Put the helm down and swing through the wind onto the other tack. The
+        // exit condition watches the tack itself: the true wind angle changes sign
+        // as the bow passes through the eye of the wind.
+        boolean startedOnStarboard = b.wind().isStarboardTack();
+        b.setRudder(-1.0);
+        double elapsed = 0;
+        while (elapsed < 15.0) {
+            b.advance(0.05, 12 * KNOTS, WIND_TOWARD, WaveSurface.FLAT, elapsed);
+            elapsed += 0.05;
+            if (b.wind().isStarboardTack() != startedOnStarboard
+                    && Math.abs(b.wind().trueAngle) > Math.toRadians(43)) {
+                break;
+            }
+        }
+        b.setRudder(0);
+        assertTrue(b.wind().isStarboardTack() != startedOnStarboard,
+                "the boat should have come out on the other tack");
+        double justAfter = b.speedKnots();
+        assertTrue(justAfter < before,
+                "a tack must cost speed: " + justAfter + " vs " + before);
+
+        sail(b, 90, 12);
+        assertTrue(b.speedKnots() > justAfter,
+                "and the boat must rebuild it afterwards");
+    }
+
+    @Test
+    @DisplayName("bad trim costs about fifteen percent, not the whole boat")
+    void trimScalesThePolar() {
+        SailingBoat good = boat();
+        good.setPosition(0, 0, Math.PI / 2);
+        good.setTrim(1.0);
+        sail(good, 120, 12);
+
+        SailingBoat bad = boat();
+        bad.setPosition(0, 0, Math.PI / 2);
+        bad.setTrim(0.0);
+        sail(bad, 120, 12);
+
+        double ratio = bad.speedKnots() / good.speedKnots();
+        assertTrue(ratio > 0.83 && ratio < 0.88,
+                "badly trimmed boat made " + (ratio * 100) + "% of the well trimmed one");
+    }
+
+    @Test
+    @DisplayName("the hull sits on the water and answers the waves")
+    void attitudeFollowsTheSurface() {
+        // A swell running along +X with a wavelength of four boat lengths.
+        WaveSurface swell = WaveSurface.sine(1.5, 48.0, 0.0, 0.0);
+        SailingBoat b = boat();
+        b.setPosition(0, 0, 0);  // bow along +X, straight into the swell's travel
+
+        double minHeave = Double.MAX_VALUE;
+        double maxHeave = -Double.MAX_VALUE;
+        double maxPitch = 0;
+        for (double t = 0; t < 40; t += 0.05) {
+            b.advance(0.05, 12 * KNOTS, WIND_TOWARD, swell, t);
+            minHeave = Math.min(minHeave, b.heave());
+            maxHeave = Math.max(maxHeave, b.heave());
+            maxPitch = Math.max(maxPitch, Math.abs(b.pitch()));
+        }
+
+        assertTrue(maxHeave - minHeave > 1.5,
+                "the boat should rise and fall through the swell, range was "
+                        + (maxHeave - minHeave) + " m");
+        assertTrue(maxHeave <= 1.51 && minHeave >= -1.51,
+                "but never further than the wave is tall");
+        assertTrue(maxPitch > Math.toRadians(3),
+                "and it should pitch, got " + Math.toDegrees(maxPitch) + " degrees");
+    }
+
+    @Test
+    @DisplayName("a hull along the crest heels, one across it pitches")
+    void pitchAndRollAreNotSwapped() {
+        // Swell travelling along +X: the slope is along X, flat along Z.
+        WaveSurface swell = WaveSurface.sine(1.0, 30.0, 0.0, 0.0);
+
+        // Sampled at a zero crossing, where the slope is steepest. A crest would
+        // have been the worst possible choice: the surface is flat there, so
+        // neither pitch nor roll would have anything to register.
+        SailingBoat intoIt = boat();
+        intoIt.setPosition(0, 0, 0);            // bow along the slope
+        intoIt.advance(0.05, 1e-6, WIND_TOWARD, swell, 0);
+
+        SailingBoat acrossIt = boat();
+        acrossIt.setPosition(0, 0, Math.PI / 2);    // bow along the crest
+        acrossIt.advance(0.05, 1e-6, WIND_TOWARD, swell, 0);
+
+        assertTrue(Math.abs(intoIt.pitch()) > Math.abs(intoIt.roll()) + 0.01,
+                "pointing along the slope must pitch, not heel");
+        assertTrue(Math.abs(acrossIt.roll()) > Math.abs(acrossIt.pitch()) + 0.01,
+                "pointing along the crest must heel, not pitch");
+    }
+
+    @Test
+    @DisplayName("flat water means a level boat")
+    void flatWaterIsLevel() {
+        SailingBoat b = boat();
+        b.setPosition(3, -7, 1.1);
+        sail(b, 5, 10);
+        assertEquals(0.0, b.heave(), 1e-6);
+        assertEquals(0.0, b.pitch(), 1e-9);
+        assertEquals(0.0, b.roll(), 1e-9);
+    }
+
+    @Test
+    @DisplayName("the trajectory does not depend on the frame rate")
+    void integrationIsFrameRateIndependent() {
+        SailingBoat smooth = boat();
+        smooth.setPosition(0, 0, Math.PI - Math.toRadians(50));
+        smooth.setRudder(0.2);
+        for (int i = 0; i < 6000; i++) {          // 60 s at 100 fps
+            smooth.advance(1.0 / 100, 14 * KNOTS, WIND_TOWARD, WaveSurface.FLAT, i / 100.0);
+        }
+
+        SailingBoat stuttering = boat();
+        stuttering.setPosition(0, 0, Math.PI - Math.toRadians(50));
+        stuttering.setRudder(0.2);
+        double t = 0;
+        boolean slow = false;
+        while (t < 60.0) {                        // 60 s at a lurching 12-60 fps
+            double dt = slow ? 1.0 / 12 : 1.0 / 60;
+            slow = !slow;
+            stuttering.advance(dt, 14 * KNOTS, WIND_TOWARD, WaveSurface.FLAT, t);
+            t += dt;
+        }
+
+        // Fixed stepping means both boats take the same number of 120 Hz steps, so
+        // they must end up in very nearly the same place.
+        assertEquals(smooth.x(), stuttering.x(), 1.0, "x drifted with frame rate");
+        assertEquals(smooth.z(), stuttering.z(), 1.0, "z drifted with frame rate");
+        assertEquals(smooth.speedKnots(), stuttering.speedKnots(), 0.05);
+    }
+
+    @Test
+    @DisplayName("polar efficiency reads one when the boat is on its number")
+    void polarEfficiencyReadsCorrectly() {
+        SailingBoat b = boat();
+        b.setPosition(0, 0, Math.PI / 2);
+        sail(b, 180, 12);
+        assertEquals(1.0, b.polarEfficiency(12 * KNOTS), 0.02);
+    }
+}

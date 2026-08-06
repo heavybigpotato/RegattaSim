@@ -152,6 +152,15 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
+    # A deployment must never be cancelled halfway. The workflow-level rule
+    # cancels superseded runs, which is right for tests - a newer commit's results
+    # are the ones that matter - but wrong for publishing: a second merge landing
+    # while the first is deploying would kill it, and if the newer run then failed,
+    # the site would be left stale with nothing to say so. Deployments queue
+    # instead, so the last one to finish is always the newest content.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
