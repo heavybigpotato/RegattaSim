@@ -104,7 +104,7 @@ the wave spectrum unit-testable.
 
 An ocean renderer fails quietly. A transposed index or a conjugated twiddle still
 produces something that moves and looks vaguely like water, so "it looks fine" is
-not evidence. Five checks run on every push:
+not evidence. Six checks run on every push:
 
 1. **`core` unit tests (30).** The FFT is checked against a naive DFT. The
    spectrum chain is checked for energy conservation: the wavenumber spectrum
@@ -119,8 +119,11 @@ not evidence. Five checks run on every push:
    software rasteriser and published as artifacts.
 5. **The web ocean is executed, not just served.** CI loads the page in headless
    Chromium, drives 150 frames, and fails on any shader compile error, page
-   exception or GL error — plus a check that the generated shader bundle has not
-   drifted from the native sources.
+   exception or GL error.
+6. **The web maths is checked against `core`.** Both are evaluated for one sea
+   state and compared value by value — wave height, dispersion, the h0 field and
+   so the 64-bit hash, the butterfly plan, sky luminance — plus a check that the
+   generated shader bundle has not drifted from the native sources.
 
 Seven real bugs were caught this way while building it: a JONSWAP fetch relation
 that produced a 6.5 m sea where physics allows 4 m; a butterfly table uploaded
@@ -130,6 +133,13 @@ configuration declared after its use; an ABI parsed as the last hyphen-separated
 token, which would have shipped an APK with no native libraries for any ARM
 phone; and, in the web build, uniform locations cached before a re-link
 invalidated them.
+
+The parity check found one more the moment it first ran, and it was in the Java,
+not the JavaScript: `GRAVITY`, `TAU` and `PI` were declared `float` but used only
+inside `double` expressions, so `core` — the module the server will replay physics
+against — had been carrying a relative error of 1.6e-8 through every wavenumber
+and frequency in the model. Invisible in any frame; not a property worth keeping
+in the one place that is supposed to be authoritative.
 
 ## Assumptions and known gaps
 

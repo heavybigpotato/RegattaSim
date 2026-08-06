@@ -95,6 +95,10 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Install node dependencies
+        working-directory: tools
+        run: npm install --no-fund --no-audit
+
       - name: Shaders are in sync with the native sources
         # docs/ocean/shaders.js is generated. If it drifts from
         # render/src/main/resources/shaders, the web preview stops being evidence
@@ -103,11 +107,17 @@ jobs:
           ./gradlew :render:generateWebShaders --no-daemon
           git diff --exit-code -- docs/ocean/shaders.js
 
+      - name: The web maths agrees with core
+        # docs/ocean/spectrum.js is a hand transliteration of the Java. A lost sign
+        # or a mis-ported hash still yields a plausible ocean - just not this one -
+        # so both are evaluated for one sea state and compared value by value.
+        run: |
+          ./gradlew :core:dumpSpectrum -q --no-daemon > java-spectrum.json
+          node tools/web-parity-check.js java-spectrum.json
+
       - name: Install browser
         working-directory: tools
-        run: |
-          npm ci --no-fund --no-audit || npm install --no-fund --no-audit
-          npx playwright install --with-deps chromium
+        run: npx playwright install --with-deps chromium
 
       - name: Run the WebGL ocean
         # Served rather than opened from disk: the page is an ES module and

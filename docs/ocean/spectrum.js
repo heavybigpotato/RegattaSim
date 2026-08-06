@@ -4,8 +4,15 @@
 // Java in `core` is the authority: it is unit tested against a naive DFT, checked
 // for spectral energy conservation, and shared with the authoritative server. This
 // file exists so a phone with no App Store account can see that same ocean in a
-// browser, and it is checked against the Java by `web-parity.test`, which compares
-// the two implementations' output for an identical sea state.
+// browser. It is checked against the Java by `tools/web-parity-check.js`, which
+// evaluates both for one sea state and compares them value by value: significant
+// wave height, peak frequency, dispersion, the h0 field itself (and therefore the
+// 64-bit hash), the butterfly plan, and sky luminance. That check runs in CI.
+//
+// It earned its place on its first run, by catching a discrepancy that turned out
+// to be in the Java rather than here: GRAVITY, TAU and PI were declared float but
+// used only in double expressions, so `core` had been carrying a relative error of
+// 1.6e-8 through every wavenumber and frequency.
 //
 // Everything here reads as its Java counterpart does. Where it differs, it is
 // because JavaScript has no 64-bit integers outside BigInt, which only affects the
