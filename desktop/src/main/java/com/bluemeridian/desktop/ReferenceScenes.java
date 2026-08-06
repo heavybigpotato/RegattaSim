@@ -37,10 +37,26 @@ public final class ReferenceScenes {
         public final float exposure;
         /** Simulation time to render at; fixed so the image is reproducible. */
         public final float time;
+        /**
+         * When set, a boat is sailed through the scene and the camera trails it.
+         *
+         * <p>{@code cameraHeight} then means height above the boat rather than above
+         * mean water, and {@code cameraHeading} means yaw off dead astern.
+         */
+        public final boolean withBoat;
+        /** Initial heading of the boat, radians. Only meaningful with a boat. */
+        public final float boatHeading;
 
         Scene(String name, SeaState sea, float cameraHeight, float cameraHeading,
                 float cameraPitch, float sunElevation, float sunAzimuth, float turbidity,
                 float exposure, float time) {
+            this(name, sea, cameraHeight, cameraHeading, cameraPitch, sunElevation,
+                    sunAzimuth, turbidity, exposure, time, false, 0f);
+        }
+
+        Scene(String name, SeaState sea, float cameraHeight, float cameraHeading,
+                float cameraPitch, float sunElevation, float sunAzimuth, float turbidity,
+                float exposure, float time, boolean withBoat, float boatHeading) {
             this.name = name;
             this.sea = sea;
             this.cameraHeight = cameraHeight;
@@ -51,6 +67,8 @@ public final class ReferenceScenes {
             this.turbidity = turbidity;
             this.exposure = exposure;
             this.time = time;
+            this.withBoat = withBoat;
+            this.boatHeading = boatHeading;
         }
     }
 
@@ -107,6 +125,19 @@ public final class ReferenceScenes {
                         7.5f, (float) Math.toRadians(240), (float) Math.toRadians(-5),
                         (float) Math.toRadians(34), (float) Math.toRadians(280),
                         5.5f, 0.30f, 150.0f),
+
+                // A boat, beating in a working breeze. This is the scene that shows
+                // the client's own hull rather than the browser's: same loft, same
+                // shaders, same sailing model, drawn by the native renderer. The
+                // wind blows toward +X, so it arrives from 180 degrees and a heading
+                // of -130 puts it 50 degrees off the starboard bow.
+                new Scene("07-close-hauled",
+                        new SeaState(18.0 * KNOTS, Math.toRadians(0), 250_000, 3.3, 3000,
+                                1.6, 11.0, Math.toRadians(15), 0.07, 30, 1.0, 200, 40_040L),
+                        6.5f, (float) Math.toRadians(32), (float) Math.toRadians(-9),
+                        (float) Math.toRadians(21), (float) Math.toRadians(120),
+                        2.5f, 0.34f, 96.0f,
+                        true, (float) -(Math.PI - Math.toRadians(50))),
         };
     }
 }

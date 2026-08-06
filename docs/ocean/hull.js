@@ -13,6 +13,22 @@
 const MATERIAL = { HULL: 0, DECK: 1, RIG: 2, SAIL: 3 };
 
 /**
+ * A stable summary of a mesh, matching BoatMesh.checksum in `core`.
+ *
+ * Summing coordinates plainly would let a sign error cancel itself out, so each is
+ * weighted by where it sits in the buffer: moving a vertex, flipping a winding or
+ * dropping a face all change the total. tools/web-parity-check.js compares this
+ * against the Java, so the two boats cannot quietly become different boats.
+ */
+export function meshChecksum(mesh) {
+  let sum = 0;
+  for (let i = 0; i < mesh.positions.length; i++) sum += mesh.positions[i] * ((i % 97) + 1);
+  for (let i = 0; i < mesh.normals.length; i++) sum += mesh.normals[i] * ((i % 71) + 1);
+  for (let i = 0; i < mesh.indices.length; i++) sum += mesh.indices[i] * ((i % 89) + 1);
+  return sum;
+}
+
+/**
  * How much higher the deck is on the centreline than at the sheer, metres.
  *
  * Every boat's deck is arched. It sheds water, it is stiffer than a flat plate
@@ -30,12 +46,26 @@ const DECK_CROWN = 0.18;
  * A cruising hull would taper to a fine stern instead, and the difference is
  * most of what makes these two types recognisable from astern.
  */
-function halfWidth(t, halfBeam) {
+function beamShape(t) {
   // Smooth all the way, deliberately. An earlier version clamped the forward
   // curve at the point of maximum beam and tapered aft of it, which is easy to
   // read but leaves a slope discontinuity there - and a flat-shaded hull renders
   // that as a hard crease running right down the topsides.
-  return halfBeam * Math.sin(Math.PI * 0.5 * Math.pow(t, 0.8)) * (1 - 0.1 * Math.pow(t, 2.5));
+  return Math.sin(Math.PI * 0.5 * Math.pow(t, 0.8)) * (1 - 0.1 * Math.pow(t, 2.5));
+}
+
+/**
+ * Scales `beamShape` so the widest station is exactly the beam asked for.
+ *
+ * Without this the shape function peaks below 1 - it did, at 0.916 - and the drawn
+ * boat came out 8% narrower than the hull the physics was sampling for roll.
+ * Computed from the same discrete stations the loft uses, so the maximum is the one
+ * that actually gets built rather than the curve's analytic peak.
+ */
+function beamScale(stations) {
+  let widest = 0;
+  for (let i = 0; i <= stations; i++) widest = Math.max(widest, beamShape(i / stations));
+  return 1 / widest;
 }
 
 /**
@@ -72,22 +102,40 @@ function push(arrays, x, y, z, nx, ny, nz, material) {
   return arrays.positions.length / 3 - 1;
 }
 
-function faceNormal(a, b, c) {
+/**
+ * Smallest cross-product length a triangle may have and still be built. Twice the
+ * area, so this is a face of half a square millimetre - real faces here are
+ * thousands of times larger and the ones this rejects are millions of times
+ * smaller, so nothing sits near the line. Matches BoatMesh.Builder in `core`.
+ */
+const MINIMUM_FACE = 1e-9;
+
+/**
+ * Adds a flat-shaded triangle. Flat shading suits a hard-chined racing hull.
+ *
+ * Degenerate faces are dropped rather than emitted with a meaningless normal, and
+ * they do occur: the bow station collapses the keel, chine and deck edge onto one
+ * point, and both sail heads taper to a point where the luff and the leech arrive
+ * by different arithmetic - so the two "same" vertices differ in the last bits of
+ * a double, and the face is not exactly degenerate. `normalize` of a near-zero
+ * vector is undefined in GLSL, and Java and JavaScript disagreed about which way
+ * one such face pointed by 9 degrees, which is what found this.
+ */
+function triangle(arrays, a, b, c, material) {
   const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
   const vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
-  const nx = uy * vz - uz * vy;
-  const ny = uz * vx - ux * vz;
-  const nz = ux * vy - uy * vx;
-  const l = Math.hypot(nx, ny, nz) || 1;
-  return [nx / l, ny / l, nz / l];
-}
+  let nx = uy * vz - uz * vy;
+  let ny = uz * vx - ux * vz;
+  let nz = ux * vy - uy * vx;
+  const length = Math.sqrt(nx * nx + ny * ny + nz * nz);
+  if (length < MINIMUM_FACE) return;
+  nx /= length;
+  ny /= length;
+  nz /= length;
 
-/** Adds a flat-shaded triangle. Flat shading suits a hard-chined racing hull. */
-function triangle(arrays, a, b, c, material) {
-  const n = faceNormal(a, b, c);
-  const i0 = push(arrays, a[0], a[1], a[2], n[0], n[1], n[2], material);
-  const i1 = push(arrays, b[0], b[1], b[2], n[0], n[1], n[2], material);
-  const i2 = push(arrays, c[0], c[1], c[2], n[0], n[1], n[2], material);
+  const i0 = push(arrays, a[0], a[1], a[2], nx, ny, nz, material);
+  const i1 = push(arrays, b[0], b[1], b[2], nx, ny, nz, material);
+  const i2 = push(arrays, c[0], c[1], c[2], nx, ny, nz, material);
   arrays.indices.push(i0, i1, i2);
 }
 
@@ -106,6 +154,8 @@ export function buildHull(length = 12.18, beam = 4.5) {
   const arrays = { positions: [], normals: [], materials: [], indices: [] };
   const halfBeam = beam * 0.5;
   const stations = 22;
+  const scale = beamScale(stations);
+  const halfWidth = (t) => halfBeam * beamShape(t) * scale;
 
   // Station 0 is the bow, station `stations` the transom. x runs from +L/2 to
   // -L/2 so the bow sits forward of the origin.
@@ -116,7 +166,7 @@ export function buildHull(length = 12.18, beam = 4.5) {
   // pyramid rather than a boat.
   const station = (i) => {
     const t = i / stations;
-    const hw = halfWidth(t, halfBeam);
+    const hw = halfWidth(t);
     const keel = keelDepth(t);
     return {
       x: length * (0.5 - t),
