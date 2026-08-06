@@ -9,6 +9,9 @@ import com.badlogic.gdx.graphics.Pixmap;
 import com.badlogic.gdx.graphics.PixmapIO;
 import com.badlogic.gdx.graphics.PerspectiveCamera;
 import com.badlogic.gdx.math.Vector3;
+import com.bluemeridian.core.ocean.CpuOceanSurface;
+import com.bluemeridian.core.sailing.PolarDiagram;
+import com.bluemeridian.core.sailing.SailingBoat;
 import com.bluemeridian.render.RenderQuality;
 import com.bluemeridian.render.scene.OceanScene;
 import java.io.File;
@@ -102,18 +105,34 @@ public final class ReferenceSceneTool {
                 PerspectiveCamera camera = new PerspectiveCamera(58f, WIDTH, HEIGHT);
                 camera.near = 0.15f;
                 camera.far = 60_000f;
-                camera.position.set(0f, scene.cameraHeight, 0f);
-                camera.direction.set(
-                        (float) (Math.cos(scene.cameraPitch) * Math.cos(scene.cameraHeading)),
-                        (float) Math.sin(scene.cameraPitch),
-                        (float) (Math.cos(scene.cameraPitch) * Math.sin(scene.cameraHeading)));
-                camera.up.set(Vector3.Y);
-                camera.update();
+
+                SailingBoat boat = null;
+                CpuOceanSurface surface = null;
+                if (scene.withBoat) {
+                    // The boat floats on a CPU realisation of the same sea state the
+                    // GPU is drawing: same spectrum, same seed, same band limits, at
+                    // physics resolution.
+                    surface = new CpuOceanSurface(scene.sea,
+                            RenderQuality.ULTRA.cascades(), 64, 2);
+                    boat = new SailingBoat(
+                            PolarDiagram.fromClasspath("polars/class40.csv"),
+                            SailingBoat.HullShape.class40());
+                    boat.setPosition(0, 0, scene.boatHeading);
+                    oceanScene.setBoat(boat);
+                }
+                placeCamera(camera, scene, boat);
 
                 // Run the five seconds of simulation leading up to the capture time.
                 float start = scene.time - WARMUP_FRAMES * WARMUP_STEP;
                 for (int frame = 1; frame <= WARMUP_FRAMES; frame++) {
-                    oceanScene.renderAt(camera, start + frame * WARMUP_STEP, WARMUP_STEP);
+                    float now = start + frame * WARMUP_STEP;
+                    if (boat != null) {
+                        surface.update(now);
+                        boat.advance(WARMUP_STEP, scene.sea.windSpeed,
+                                scene.sea.windDirection, surface, now);
+                        placeCamera(camera, scene, boat);
+                    }
+                    oceanScene.renderAt(camera, now, WARMUP_STEP);
                 }
 
                 writePng(new File(outputDirectory, scene.name + ".png"));
@@ -126,6 +145,41 @@ public final class ReferenceSceneTool {
             } finally {
                 oceanScene.dispose();
             }
+        }
+
+        /**
+         * Points the camera: fixed at the origin for a sea-and-sky scene, trailing
+         * the boat for one that has a boat in it.
+         *
+         * <p>The chase camera sits off the quarter rather than dead astern. From
+         * directly behind, a 12 m hull foreshortens into a wedge and the sails are
+         * edge-on; off the quarter shows the length of one and the camber of the
+         * other, which is where every photograph of a boat under sail is taken from.
+         */
+        private static void placeCamera(PerspectiveCamera camera,
+                ReferenceScenes.Scene scene, SailingBoat boat) {
+            if (boat == null) {
+                camera.position.set(0f, scene.cameraHeight, 0f);
+                camera.direction.set(
+                        (float) (Math.cos(scene.cameraPitch) * Math.cos(scene.cameraHeading)),
+                        (float) Math.sin(scene.cameraPitch),
+                        (float) (Math.cos(scene.cameraPitch) * Math.sin(scene.cameraHeading)));
+            } else {
+                double back = 24.0;
+                double yaw = boat.heading() + scene.cameraHeading;
+                camera.position.set(
+                        (float) (boat.x() - Math.cos(yaw) * back),
+                        (float) (boat.heave() + scene.cameraHeight),
+                        (float) (boat.z() - Math.sin(yaw) * back));
+                // Aimed at the rig rather than the deck, so the boat sits in the frame
+                // rather than at the bottom of it.
+                camera.direction.set(
+                        (float) boat.x() - camera.position.x,
+                        (float) (boat.heave() + 4.0) - camera.position.y,
+                        (float) boat.z() - camera.position.z).nor();
+            }
+            camera.up.set(Vector3.Y);
+            camera.update();
         }
 
         private void writePng(File file) {

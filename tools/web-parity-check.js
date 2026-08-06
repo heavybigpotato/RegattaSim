@@ -16,6 +16,7 @@ import {
   omegaOf, quantiseForLoop, meanDomeLuminance,
 } from '../docs/ocean/spectrum.js';
 import { loadPolar, apparentWind, Boat } from '../docs/ocean/sailing.js';
+import { buildHull, buildSails, meshChecksum } from '../docs/ocean/hull.js';
 
 const expected = JSON.parse(readFileSync(process.argv[2] || 'java-spectrum.json', 'utf8'));
 
@@ -130,6 +131,30 @@ const polar = loadPolar('class40.csv');
   const actual = [boat.x, boat.z, boat.heading, boat.speed, boat.heave, boat.pitch,
     boat.roll, boat.windHeel];
   actual.forEach((v, i) => close(`boat.${labels[i]}`, v, expected.boat[i], 1e-6, 1e-9));
+}
+
+// The boat itself. `core` is the authority and the browser is the transliteration
+// here too, so the two must generate the same vertices - otherwise the page stops
+// being a preview of the client and becomes a different boat that happens to sail
+// the same. Vertex and index counts catch a dropped or duplicated face; the
+// weighted checksum catches a moved vertex or a flipped winding.
+//
+// Compared absolutely, not relatively. The checksum runs to eight figures, so a
+// relative tolerance of 1e-6 would permit a swing of 25 - enough to hide a
+// millimetre moved on every vertex in the boat, which it did. Both sides compute
+// identical doubles and round them to identical floats, so the only slack needed
+// is the six decimals the dump prints.
+const MESH_TOLERANCE = 1e-4;
+{
+  const hull = buildHull();
+  close('hull.vertices', hull.positions.length / 3, expected.hullMesh[0], 0);
+  close('hull.indices', hull.indices.length, expected.hullMesh[1], 0);
+  close('hull.checksum', meshChecksum(hull), expected.hullMesh[2], 0, MESH_TOLERANCE);
+
+  const sails = buildSails(hull, 0.4, 0.11);
+  close('sails.vertices', sails.positions.length / 3, expected.sailMesh[0], 0);
+  close('sails.indices', sails.indices.length, expected.sailMesh[1], 0);
+  close('sails.checksum', meshChecksum(sails), expected.sailMesh[2], 0, MESH_TOLERANCE);
 }
 
 if (failures.length) {

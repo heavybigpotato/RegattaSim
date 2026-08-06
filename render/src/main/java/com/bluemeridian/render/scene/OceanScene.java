@@ -4,7 +4,9 @@ import com.badlogic.gdx.graphics.Camera;
 import com.badlogic.gdx.utils.Disposable;
 import com.bluemeridian.core.ocean.CascadeSettings;
 import com.bluemeridian.core.ocean.SeaState;
+import com.bluemeridian.core.sailing.SailingBoat;
 import com.bluemeridian.render.RenderQuality;
+import com.bluemeridian.render.boat.BoatRenderer;
 import com.bluemeridian.render.ocean.GpuOceanSimulation;
 import com.bluemeridian.render.ocean.OceanRenderer;
 import com.bluemeridian.render.post.AutoExposure;
@@ -30,6 +32,10 @@ public final class OceanScene implements Disposable {
     private final SunLight sun = new SunLight();
     private final AutoExposure autoExposure = new AutoExposure();
     private boolean autoExposureEnabled = true;
+
+    /** Built on first use: a scene may be nothing but sea and sky. */
+    private BoatRenderer boatRenderer;
+    private SailingBoat boat;
 
     private SeaState seaState;
     private float maximumDisplacement;
@@ -67,6 +73,24 @@ public final class OceanScene implements Disposable {
         simulation.setFoam(1.0f, foamGain, 1.1f);
         autoExposure.update(sun.elevation(), oceanRenderer.turbidity(), 0f);
         autoExposure.snap();
+    }
+
+    /**
+     * Puts a boat in the scene, or removes it with {@code null}.
+     *
+     * <p>The boat is drawn where the sailing model says it is; this class never
+     * advances it. Whoever owns the simulation steps it, at its own fixed rate,
+     * which is the only way client and server can agree about where a boat is.
+     */
+    public void setBoat(SailingBoat boat) {
+        this.boat = boat;
+        if (boat != null && boatRenderer == null) {
+            boatRenderer = new BoatRenderer();
+        }
+    }
+
+    public SailingBoat boat() {
+        return boat;
     }
 
     public SunLight sun() {
@@ -144,6 +168,11 @@ public final class OceanScene implements Disposable {
         postProcessor.beginScene();
         skyRenderer.render(camera, sun);
         oceanRenderer.render(camera, simulation, sun, seaState, maximumDisplacement);
+        if (boat != null) {
+            // After the water, so the hull tests against the depth the sea wrote and
+            // anything below the surface is hidden by it.
+            boatRenderer.render(camera, boat, sun, oceanRenderer.turbidity());
+        }
         postProcessor.endScene();
 
         postProcessor.resolveToScreen();
@@ -155,5 +184,8 @@ public final class OceanScene implements Disposable {
         oceanRenderer.dispose();
         skyRenderer.dispose();
         postProcessor.dispose();
+        if (boatRenderer != null) {
+            boatRenderer.dispose();
+        }
     }
 }

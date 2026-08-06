@@ -1,5 +1,7 @@
 package com.bluemeridian.core.tools;
 
+import com.bluemeridian.core.boat.BoatMesh;
+import com.bluemeridian.core.boat.HullLoft;
 import com.bluemeridian.core.env.PreethamSky;
 import com.bluemeridian.core.math.ButterflyPlan;
 import com.bluemeridian.core.ocean.CascadeSettings;
@@ -143,6 +145,17 @@ public final class SpectrumDump {
                 "  \"boat\": [%.10f, %.10f, %.10f, %.10f, %.10f, %.10f, %.10f, %.10f],%n",
                 boat.x(), boat.z(), boat.heading(), boat.speed(),
                 boat.heave(), boat.pitch(), boat.roll(), boat.windHeel());
+
+        // The boat's geometry, so the browser's transliterated loft cannot quietly
+        // become a different boat. Counts catch a dropped or duplicated face; the
+        // checksum catches a moved vertex or a flipped winding.
+        HullLoft loft = HullLoft.class40();
+        BoatMesh hullMesh = loft.hull();
+        BoatMesh sailMesh = loft.sails(0.4, 0.11);
+        out.printf(Locale.ROOT, "  \"hullMesh\": [%d, %d, %.6f],%n",
+                hullMesh.vertexCount(), hullMesh.indices.length, hullMesh.checksum());
+        out.printf(Locale.ROOT, "  \"sailMesh\": [%d, %d, %.6f],%n",
+                sailMesh.vertexCount(), sailMesh.indices.length, sailMesh.checksum());
 
         out.print("  \"meanDomeLuminance\": [");
         double[] elevations = {-0.05, 0.05, 0.3, 0.9, 1.4};

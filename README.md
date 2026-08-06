@@ -23,7 +23,8 @@ boat sailing on it — in the native client and in the browser showcase alike.
 | **Physics surface** | `CpuOceanSurface` runs the same spectrum and butterfly schedule on the CPU at physics resolution, so a boat can float on the water that is drawn — and a server can replay it without a GPU. |
 | **Sailing** | Apparent wind from the vector subtraction, a polar diagram interpolated bicubically in both axes, a fixed 120 Hz step, inertia on the speed, a rudder that needs flow over it, heel from the athwartships wind pressure, and heave, pitch and roll read off the wave surface. |
 | **Build** | Gradle multi-module, desktop launcher, Android launcher, GitHub Actions producing an installable APK on every push. |
-| **Web showcase** | The same ocean in WebGL 2 from the same shader sources, so it can be seen on a device that cannot install an APK. |
+| **Boat** | Hull, deck, coachroof, appendages, rig and two cambered sails, generated from curves in `core` rather than loaded as an asset. One definition draws it in the Android client, the desktop launcher, the CI reference renderer and the browser. |
+| **Web showcase** | The same ocean and the same boat in WebGL 2, from the same shader sources and the same geometry, so both can be seen on a device that cannot install an APK. |
 
 ## Everything is free
 
@@ -48,9 +49,13 @@ apparent-wind maths and the same 120 Hz step as `core`, transliterated into
 `docs/ocean/sailing.js` — and `tools/web-parity-check.js` evaluates both and
 compares a full two-minute trajectory, so the two cannot drift apart unnoticed.
 
-The site is published by the `pages` job in CI, which also switches Pages on for
-the repository the first time it runs on `main`. Nothing has to be clicked in
-repository settings.
+The site is published by the `pages` job in CI, which also asks GitHub to switch
+Pages on for the repository the first time it runs on `main`. **That has not yet
+succeeded.** The deployment reaches the `github-pages` environment and then sits
+`waiting` until it times out fifteen minutes later, which is what happens when
+Pages is not enabled for the repository and the workflow token is not permitted to
+enable it. Enabling Pages once by hand — Settings, Pages, Source: GitHub Actions —
+clears it, and the workflow needs no change afterwards.
 
 This exists because iOS cannot install an APK and Apple will not run unsigned
 code, so a browser is the only route onto an iPhone that costs nothing and needs
@@ -81,7 +86,7 @@ different platform's format entirely. Use the live ocean above instead.
 
 ```sh
 ./gradlew :desktop:run                      # interactive ocean
-./gradlew :desktop:renderReferenceScenes    # write the six reference frames to PNG
+./gradlew :desktop:renderReferenceScenes    # write the seven reference frames to PNG
 ./gradlew :desktop:verifyGpuFft             # check the GPU FFT against the CPU one
 ./gradlew :core:test :render:validateShaders
 ```
@@ -95,7 +100,8 @@ choppiness, `1`–`4` quality tier, `B` bloom, `P` print state.
 ## Layout
 
 ```
-core/        Pure JVM. Spectra, FFT, dispersion, sky model, deterministic RNG.
+core/        Pure JVM. Spectra, FFT, dispersion, sky model, deterministic RNG,
+             the sailing model, and the boat's geometry generated from curves.
              No libGDX, no Android — enforced by the checkCorePurity task.
 render/      Shaders, FFT pipeline, projected grid, sky, post-processing.
 desktop/     LWJGL3 launcher, reference-scene renderer, GPU verification tool.
@@ -115,7 +121,7 @@ An ocean renderer fails quietly. A transposed index or a conjugated twiddle stil
 produces something that moves and looks vaguely like water, so "it looks fine" is
 not evidence. Six checks run on every push:
 
-1. **`core` unit tests (30).** The FFT is checked against a naive DFT. The
+1. **`core` unit tests (74).** The FFT is checked against a naive DFT. The
    spectrum chain is checked for energy conservation: the wavenumber spectrum
    integrates back to the significant wave height it was built from, to within 3%.
    The sky model's coefficient tables are checked against physical expectations.
@@ -124,8 +130,9 @@ not evidence. Six checks run on every push:
 3. **GPU vs CPU.** The same sea state is evolved on both, and the displacement
    fields are compared texel by texel. Current agreement: **0.7% of RMS**, which
    is 16-bit float storage precision.
-4. **Reference scenes.** Six fixed sea states are rendered offscreen in CI on a
-   software rasteriser and published as artifacts.
+4. **Reference scenes.** Seven fixed scenes — six sea states and one boat under
+   sail — are rendered offscreen in CI on a software rasteriser and published as
+   artifacts.
 5. **The web ocean is executed, not just served.** CI loads the page in headless
    Chromium, drives 150 frames, and fails on any shader compile error, page
    exception or GL error.
@@ -191,9 +198,15 @@ nothing about frame rate. The 60 fps targets in the performance table are budget
 not measurements. **The Phase 1 acceptance criterion of 60 fps on a target device
 is not yet demonstrated**, and cannot be until the APK runs on a phone.
 
+**The boat is not photoreal and is not claimed to be.** It is procedural geometry
+with four flat-shaded materials: no textures, no rigging beyond the forestay, no
+crew, no deck hardware, and sails that hold a fixed camber instead of flogging or
+twisting. It reads as the right kind of boat at chase-camera distance and it would
+not survive a close-up. Real assets are Phase 6.
+
 **Screenshot realism is not claimed.** The brief's acceptance test is that a still
 frame passes for a photograph for two seconds. That is a judgement a person makes,
-not one this repository can assert. The six reference frames are published so the
+not one this repository can assert. The reference frames are published so the
 judgement can be made rather than asserted. My own read: the wave *shape* and the
 crossed-sea structure hold up; the shading is still flatter than a photograph,
 mostly for want of screen-space reflections and a sharper scattering term.
