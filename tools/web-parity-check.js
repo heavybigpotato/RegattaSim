@@ -133,11 +133,16 @@ const polar = loadPolar('class40.csv');
   actual.forEach((v, i) => close(`boat.${labels[i]}`, v, expected.boat[i], 1e-6, 1e-9));
 }
 
-// The boat itself. `core` is the authority and the browser is the transliteration
-// here too, so the two must generate the same vertices - otherwise the page stops
-// being a preview of the client and becomes a different boat that happens to sail
-// the same. Vertex and index counts catch a dropped or duplicated face; the
-// weighted checksum catches a moved vertex or a flipped winding.
+// The boat's geometry.
+//
+// The hull is baked from `core` rather than transliterated, so comparing it checks
+// that boat-hull.js was regenerated after HullLoft changed - the same drift check
+// the shader bundle gets, not an independent implementation.
+//
+// The sails *are* a transliteration, because the browser has to re-loft them every
+// time the sheet moves, so this is where drift could actually happen. Vertex and
+// index counts catch a dropped or duplicated face; the weighted checksum catches a
+// moved vertex or a flipped winding.
 //
 // Compared absolutely, not relatively. The checksum runs to eight figures, so a
 // relative tolerance of 1e-6 would permit a swing of 25 - enough to hide a

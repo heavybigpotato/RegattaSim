@@ -48,7 +48,7 @@ const KNOTS = 0.514444;
   if (process.env.CHROMIUM_PATH) launch.executablePath = process.env.CHROMIUM_PATH;
 
   const browser = await chromium.launch(launch);
-  const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
+  const page = await browser.newPage({ viewport: { width: 1100, height: 700 }, deviceScaleFactor: 1 });
 
   const problems = [];
   page.on('pageerror', (e) => problems.push('pageerror: ' + e.message));
@@ -91,7 +91,9 @@ const KNOTS = 0.514444;
     }, shot);
 
     const path = join(directory, shot.out);
-    await page.screenshot({ path });
+    // Generous, because a software rasteriser with a full ocean and a boat on it
+    // never goes idle, and the default wait for a quiet frame times out.
+    await page.screenshot({ path, timeout: 120000, animations: 'disabled' });
     console.log(`${path}  ${state.knots} kt, heel ${state.heelDegrees} deg, `
       + `Hs ${state.significantWaveHeight} m`);
   }

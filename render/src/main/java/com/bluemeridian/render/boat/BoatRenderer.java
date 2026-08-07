@@ -43,6 +43,7 @@ public final class BoatRenderer implements Disposable {
     private final Matrix4 model = new Matrix4();
     private final Matrix3 normalMatrix = new Matrix3();
     private double sheetAngle = Double.NaN;
+    private float speed;
 
     public BoatRenderer() {
         this(HullLoft.class40());
@@ -91,8 +92,17 @@ public final class BoatRenderer implements Disposable {
     /** Draws the boat where the sailing model says it is. */
     public void render(Camera camera, SailingBoat boat, SunLight sun, float turbidity) {
         sheetFor(boat.wind().angle);
+        this.speed = (float) boat.speed();
         render(camera, boat.x(), boat.heave(), boat.z(),
                 boat.heading(), boat.pitch(), boat.roll(), sun, turbidity);
+    }
+
+    /**
+     * Sets speed through the water, m/s, which drives the bow wave and the wet band
+     * along the topsides. A boat lying still throws neither.
+     */
+    public void setSpeed(double metresPerSecond) {
+        this.speed = (float) metresPerSecond;
     }
 
     /**
@@ -126,6 +136,8 @@ public final class BoatRenderer implements Disposable {
                 sun.direction().x, sun.direction().y, sun.direction().z);
         program.setUniformf("u_sunColour", sun.red(), sun.green(), sun.blue());
         program.setUniformf("u_turbidity", turbidity);
+        program.setUniformf("u_waterLevel", (float) y);
+        program.setUniformf("u_boatSpeed", speed);
 
         hull.render(program, GL20.GL_TRIANGLES);
         sails.render(program, GL20.GL_TRIANGLES);
@@ -187,11 +199,12 @@ public final class BoatRenderer implements Disposable {
         Mesh mesh = new Mesh(true, vertexCount, source.indices.length,
                 new VertexAttribute(VertexAttributes.Usage.Position, 3, "a_position"),
                 new VertexAttribute(VertexAttributes.Usage.Normal, 3, "a_normal"),
-                new VertexAttribute(VertexAttributes.Usage.Generic, 1, "a_material"));
+                new VertexAttribute(VertexAttributes.Usage.Generic, 1, "a_material"),
+                new VertexAttribute(VertexAttributes.Usage.TextureCoordinates, 2, "a_uv"));
 
-        float[] interleaved = new float[vertexCount * 7];
+        float[] interleaved = new float[vertexCount * 9];
         for (int v = 0; v < vertexCount; v++) {
-            int out = v * 7;
+            int out = v * 9;
             interleaved[out] = source.positions[v * 3];
             interleaved[out + 1] = source.positions[v * 3 + 1];
             interleaved[out + 2] = source.positions[v * 3 + 2];
@@ -199,11 +212,13 @@ public final class BoatRenderer implements Disposable {
             interleaved[out + 4] = source.normals[v * 3 + 1];
             interleaved[out + 5] = source.normals[v * 3 + 2];
             interleaved[out + 6] = source.materials[v];
+            interleaved[out + 7] = source.uvs[v * 2];
+            interleaved[out + 8] = source.uvs[v * 2 + 1];
         }
         mesh.setVertices(interleaved);
 
-        // libGDX indices are shorts. The boat is a few hundred triangles, so this is
-        // never close, but a silent wrap would draw garbage rather than fail.
+        // libGDX indices are shorts. A silent wrap would draw garbage rather than
+        // fail, and a detailed hull is no longer obviously under the limit.
         if (vertexCount > Short.MAX_VALUE) {
             mesh.dispose();
             throw new IllegalStateException(

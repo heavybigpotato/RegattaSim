@@ -26,14 +26,31 @@ class HullLoftTest {
         return new double[] {min, max};
     }
 
+    /** Bounds of the hull skin alone, ignoring spars and rigging. */
+    private static double[] skinBounds(BoatMesh mesh, int axis) {
+        double min = Double.MAX_VALUE;
+        double max = -Double.MAX_VALUE;
+        for (int v = 0; v < mesh.vertexCount(); v++) {
+            if (mesh.materials[v] != BoatMesh.TOPSIDES && mesh.materials[v] != BoatMesh.BOTTOM) {
+                continue;
+            }
+            min = Math.min(min, mesh.positions[v * 3 + axis]);
+            max = Math.max(max, mesh.positions[v * 3 + axis]);
+        }
+        return new double[] {min, max};
+    }
+
     @Test
     @DisplayName("the boat is the size the polar says it is")
     void dimensionsMatchTheHull() {
+        // Measured on the skin, not on the whole mesh. The bowsprit and the pushpit
+        // both reach past the hull, which is what they are for - length overall is
+        // the hull's, and it is the hull's that the sailing model is using.
         BoatMesh hull = LOFT.hull();
-        double[] alongship = bounds(hull, 0);
-        double[] athwartships = bounds(hull, 2);
+        double[] alongship = skinBounds(hull, 0);
+        double[] athwartships = skinBounds(hull, 2);
 
-        assertEquals(12.18, alongship[1] - alongship[0], 0.02, "overall length");
+        assertEquals(12.18, alongship[1] - alongship[0], 0.02, "hull length");
         assertEquals(4.50, athwartships[1] - athwartships[0], 0.05, "maximum beam");
         assertEquals(0.0, alongship[0] + alongship[1], 0.02,
                 "the hull should straddle the origin, so the physics position is amidships");
@@ -42,9 +59,42 @@ class HullLoftTest {
     @Test
     @DisplayName("there is enough freeboard to keep the sea out")
     void freeboardIsARealBoats() {
-        // Sampled at the deck edge, which is the lowest part of the deck. A hull with
-        // a dinghy's topsides disappears in any sea worth sailing in - this test
-        // exists because that shipped once.
+        // Freeboard is the height of the *sheer* above the water, and the sheer is
+        // the top of the topsides. Taking the lowest deck vertex instead would read
+        // the cockpit sole, which is deliberately below deck level and would make
+        // this test measure the wrong thing entirely.
+        //
+        // This exists because a hull with a dinghy's topsides once shipped: in a four
+        // metre sea the deck was under water in every frame and the boat could not be
+        // seen at all.
+        BoatMesh hull = LOFT.hull();
+        int bins = 20;
+        double[] alongship = skinBounds(hull, 0);
+        double[] sheerPerBin = new double[bins];
+        java.util.Arrays.fill(sheerPerBin, -Double.MAX_VALUE);
+        for (int v = 0; v < hull.vertexCount(); v++) {
+            if (hull.materials[v] != BoatMesh.TOPSIDES) {
+                continue;
+            }
+            double f = (hull.positions[v * 3] - alongship[0]) / (alongship[1] - alongship[0]);
+            int bin = Math.min(bins - 1, Math.max(0, (int) (f * bins)));
+            sheerPerBin[bin] = Math.max(sheerPerBin[bin], hull.positions[v * 3 + 1]);
+        }
+
+        double lowestSheer = Double.MAX_VALUE;
+        for (double y : sheerPerBin) {
+            if (y > -Double.MAX_VALUE) {
+                lowestSheer = Math.min(lowestSheer, y);
+            }
+        }
+        assertTrue(lowestSheer > 1.0,
+                "the lowest point of the sheer is " + lowestSheer + " m above the waterline");
+        assertTrue(lowestSheer < 2.0, "and it should not be a ship, got " + lowestSheer);
+    }
+
+    @Test
+    @DisplayName("the cockpit is a well in the deck, not a hole through the hull")
+    void cockpitIsRecessedButAboveWater() {
         BoatMesh hull = LOFT.hull();
         double lowestDeck = Double.MAX_VALUE;
         for (int v = 0; v < hull.vertexCount(); v++) {
@@ -52,9 +102,11 @@ class HullLoftTest {
                 lowestDeck = Math.min(lowestDeck, hull.positions[v * 3 + 1]);
             }
         }
-        assertTrue(lowestDeck > 1.0,
-                "the lowest deck point is " + lowestDeck + " m above the waterline");
-        assertTrue(lowestDeck < 2.0, "and it should not be a ship, got " + lowestDeck);
+        assertTrue(lowestDeck < 1.1,
+                "the cockpit sole should sit below deck level, lowest deck point is "
+                        + lowestDeck);
+        assertTrue(lowestDeck > 0.3,
+                "but well above the waterline, or she is flooded: " + lowestDeck);
     }
 
     @Test
@@ -107,7 +159,7 @@ class HullLoftTest {
         int wrong = 0;
         for (int t = 0; t < hull.triangleCount(); t++) {
             int v = hull.indices[t * 3];
-            if (hull.materials[v] != BoatMesh.HULL) {
+            if (hull.materials[v] != BoatMesh.TOPSIDES) {
                 continue;
             }
             double z = (hull.positions[hull.indices[t * 3] * 3 + 2]
@@ -139,7 +191,7 @@ class HullLoftTest {
         // it would sit on the centreline while the sail swung away from it.
         double boomOutboard = 0;
         for (int v = 0; v < eased.vertexCount(); v++) {
-            if (eased.materials[v] == BoatMesh.RIG) {
+            if (eased.materials[v] == BoatMesh.SPAR) {
                 boomOutboard = Math.max(boomOutboard, eased.positions[v * 3 + 2]);
             }
         }
@@ -154,9 +206,17 @@ class HullLoftTest {
                 "the mast heel should be about deck height, got " + LOFT.mastBase);
         assertTrue(LOFT.houndsY < LOFT.mastHeight,
                 "the forestay cannot meet the mast above the masthead");
-        assertTrue(LOFT.stemX > 0 && LOFT.stemX < 12.18 * 0.5,
-                "the stemhead must be on the boat, at " + LOFT.stemX);
         assertTrue(LOFT.boomEnd < LOFT.mastX,
                 "the boom runs aft from the mast");
+
+        // The headsail tacks down on the bowsprit, so its tack is forward of the
+        // stem by design. It still has to be a bowsprit and not a lance.
+        double bow = 12.18 * 0.5;
+        assertTrue(LOFT.stemX > bow,
+                "the tack is on the sprit, forward of the bow: " + LOFT.stemX);
+        assertTrue(LOFT.stemX < bow + 0.25 * 12.18,
+                "but a sprit is a fraction of the boat, not another boat: " + LOFT.stemX);
+        assertTrue(LOFT.stemY > 0.5 && LOFT.stemY < LOFT.mastBase,
+                "and it sits below the mast heel, at " + LOFT.stemY);
     }
 }

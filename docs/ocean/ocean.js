@@ -292,7 +292,7 @@ export class Ocean {
       sky: program(gl, 'sky.vert', 'sky.frag', quadAttributes),
       tonemap: program(gl, 'fullscreen.vert', 'post_tonemap.frag', quadAttributes),
       boat: program(gl, 'boat.vert', 'boat.frag',
-        ['a_position', 'a_normal', 'a_material']),
+        ['a_position', 'a_normal', 'a_material', 'a_uv']),
     };
 
     this.buildQuad();
@@ -388,12 +388,17 @@ export class Ocean {
     attribute(0, geometry.positions, 3);
     attribute(1, geometry.normals, 3);
     attribute(2, geometry.materials, 1);
+    attribute(3, geometry.uvs, 2);
 
     const ibo = gl.createBuffer();
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, geometry.indices, gl.STATIC_DRAW);
     gl.bindVertexArray(null);
-    return { vao, count: geometry.indices.length };
+    // The baked hull is indexed with 16-bit indices where it fits; the sails are
+    // built here and use 32. Asking the driver for the wrong one draws confetti.
+    const type = geometry.indices instanceof Uint16Array
+      ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT;
+    return { vao, count: geometry.indices.length, type };
   }
 
   /** Rebuilds the mainsail when the sheet has moved enough to be worth it. */
@@ -431,10 +436,12 @@ export class Ocean {
     gl.uniform3fv(p.u.u_sunDirection, sun);
     gl.uniform3fv(p.u.u_sunColour, sunColour);
     gl.uniform1f(p.u.u_turbidity, this.turbidity);
+    gl.uniform1f(p.u.u_waterLevel, this.boat.heave);
+    gl.uniform1f(p.u.u_boatSpeed, this.boat.speed);
 
     for (const mesh of [this.boatMeshes.hull, this.boatMeshes.sail]) {
       gl.bindVertexArray(mesh.vao);
-      gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_INT, 0);
+      gl.drawElements(gl.TRIANGLES, mesh.count, mesh.type, 0);
     }
   }
 

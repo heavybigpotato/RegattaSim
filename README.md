@@ -23,7 +23,8 @@ boat sailing on it — in the native client and in the browser showcase alike.
 | **Physics surface** | `CpuOceanSurface` runs the same spectrum and butterfly schedule on the CPU at physics resolution, so a boat can float on the water that is drawn — and a server can replay it without a GPU. |
 | **Sailing** | Apparent wind from the vector subtraction, a polar diagram interpolated bicubically in both axes, a fixed 120 Hz step, inertia on the speed, a rudder that needs flow over it, heel from the athwartships wind pressure, and heave, pitch and roll read off the wave surface. |
 | **Build** | Gradle multi-module, desktop launcher, Android launcher, GitHub Actions producing an installable APK on every push. |
-| **Boat** | Hull, deck, coachroof, appendages, rig and two cambered sails, generated from curves in `core` rather than loaded as an asset. One definition draws it in the Android client, the desktop launcher, the CI reference renderer and the browser. |
+| **Boat** | Hull with a real turn of the bilge and a chine that hardens aft, crowned deck, toerail, coachroof with windows, recessed cockpit, keel with a bulb, rudder, tapered mast, spreaders, standing rigging, bowsprit, stanchions, lifelines, pushpit and winches — 3,200 triangles, generated from curves in `core` rather than loaded as an asset. Normals are averaged per smoothing group, so the chine and the sheer stay hard while the topsides shade smoothly. |
+| **Boat shading** | The same GGX/Smith/Schlick model the ocean uses, against the same analytic sky, with the sea substituted below the horizon. Gelcoat, non-skid, carbon, sailcloth, antifouling, rigging wire and smoked glass are separate materials; the topsides go dark and mirror-smooth where they are wet and carry a broken foam collar at the bow and the quarter when she is moving. |
 | **Web showcase** | The same ocean and the same boat in WebGL 2, from the same shader sources and the same geometry, so both can be seen on a device that cannot install an APK. |
 
 ## Everything is free
@@ -50,12 +51,15 @@ apparent-wind maths and the same 120 Hz step as `core`, transliterated into
 compares a full two-minute trajectory, so the two cannot drift apart unnoticed.
 
 The site is published by the `pages` job in CI, which also asks GitHub to switch
-Pages on for the repository the first time it runs on `main`. **That has not yet
-succeeded.** The deployment reaches the `github-pages` environment and then sits
-`waiting` until it times out fifteen minutes later, which is what happens when
-Pages is not enabled for the repository and the workflow token is not permitted to
-enable it. Enabling Pages once by hand — Settings, Pages, Source: GitHub Actions —
-clears it, and the workflow needs no change afterwards.
+Pages on for the repository the first time it runs on `main`. Nothing has to be
+clicked in repository settings.
+
+That took three attempts to demonstrate, and not for any reason in this
+repository: GitHub could not allocate a hosted runner for several hours, so every
+job — including the deployment — queued and was cancelled at the fifteen minute
+mark without ever starting. It looks exactly like a broken workflow and is not
+one. If a run dies at 15:03 with no logs and `runner_id: 0`, nothing is wrong with
+the build.
 
 This exists because iOS cannot install an APK and Apple will not run unsigned
 code, so a browser is the only route onto an iPhone that costs nothing and needs
@@ -198,11 +202,13 @@ nothing about frame rate. The 60 fps targets in the performance table are budget
 not measurements. **The Phase 1 acceptance criterion of 60 fps on a target device
 is not yet demonstrated**, and cannot be until the APK runs on a phone.
 
-**The boat is not photoreal and is not claimed to be.** It is procedural geometry
-with four flat-shaded materials: no textures, no rigging beyond the forestay, no
-crew, no deck hardware, and sails that hold a fixed camber instead of flogging or
-twisting. It reads as the right kind of boat at chase-camera distance and it would
-not survive a close-up. Real assets are Phase 6.
+**The boat is not photoreal and is not claimed to be.** There are no shadows: the
+sails do not shadow the deck and the hull does not shadow the water, which is the
+largest remaining gap and the reason it still reads as an object placed on the sea
+rather than in it. There are no textures — every material is procedural — no crew,
+no wake or bow wave in the water itself, and the sails hold a trimmed shape
+instead of flogging or luffing. It reads as the right kind of boat at
+chase-camera distance and would not survive a close-up. Real assets are Phase 6.
 
 **Screenshot realism is not claimed.** The brief's acceptance test is that a still
 frame passes for a photograph for two seconds. That is a judgement a person makes,
@@ -217,11 +223,19 @@ weather service, netcode, workshop. The module list in the brief includes
 directories do not exist yet, because empty modules are placeholders wearing a
 costume.
 
-**The hull is generated, not modelled.** `docs/ocean/hull.js` lofts a 40-footer
-from a handful of curves — stations, a chine, a crowned deck, a coachroof, a rig
-and two sails. It reads as the right kind of boat and it costs no asset pipeline,
-which is the point until Phase 6 brings one. It is not a scan of any real yacht
-and does not carry any class's design.
+**The hull is generated, not modelled.** `HullLoft` in `core` lofts a 40-footer
+from curves. It costs no asset pipeline, which is the point until Phase 6 brings
+one. It is not a scan of any real yacht and does not carry any class's design —
+the dimensions are typical of the type.
+
+Unlike the spectrum and the sailing model, the hull is **baked** for the browser
+rather than transliterated: `./gradlew :core:generateWebBoat` writes
+`docs/ocean/boat-hull.js`. Six hundred lines of static geometry maintained twice
+and reconciled by a checksum would be all of the cost of a second implementation
+and none of the benefit, because nothing but the renderer consumes it. The
+**sails** are still transliterated, because the browser has to re-loft them every
+time the sheet moves, and that is where drift could actually happen — so that is
+what the parity check compares.
 
 **Approximations, labelled.** The sun's colour is a two-term extinction fit, not a
 spectral radiance model. Whitecap coverage is scaled by wind speed with a tuned
