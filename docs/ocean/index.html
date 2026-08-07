@@ -150,8 +150,14 @@ function fail(text) {
   // graphics failure on someone else's phone from a single sentence, and this page
   // exists precisely for people whose only computer is that phone.
   try {
+    // The real canvas, not a throwaway one. Describing a fresh canvas with default
+    // attributes answers a question nobody asked: it once reported both float
+    // extensions present on a device whose actual context had just refused to start
+    // for want of them, which read as nonsense and cost a round trip to work out.
+    // Looked up again rather than closed over, because acquiring the context may
+    // have replaced the element.
     document.getElementById('capabilities').textContent =
-      describeContext(document.createElement('canvas'));
+      describeContext(document.getElementById('sea') || document.createElement('canvas'));
   } catch (e) {
     document.getElementById('capabilities').textContent = 'unavailable: ' + e.message;
   }
@@ -161,11 +167,14 @@ function fail(text) {
 // iOS reclaims WebGL contexts under memory pressure, and a page that just stops
 // with no explanation is indistinguishable from a crash. Preventing the default
 // keeps the canvas alive so a reload can restore it.
-canvas.addEventListener('webglcontextlost', (event) => {
-  event.preventDefault();
-  fail('the browser took the graphics context back, usually because the device ran '
-    + 'short of memory. Reload to start again.');
-});
+function watchForContextLoss(element) {
+  element.addEventListener('webglcontextlost', (event) => {
+    event.preventDefault();
+    fail('the browser took the graphics context back, usually because the device ran '
+      + 'short of memory. Reload to start again.');
+  });
+}
+watchForContextLoss(canvas);
 
 let ocean;
 try {
@@ -181,6 +190,10 @@ try {
   fail(e.message);
   throw e;
 }
+// The first context may have been unusable, in which case the element it belonged
+// to has been replaced and the listener above is watching a node that is no longer
+// in the page.
+if (ocean.canvas !== canvas) watchForContextLoss(ocean.canvas);
 
 // --- the boat ---------------------------------------------------------------
 

@@ -257,10 +257,81 @@ function dataTexture(gl, width, height, data) {
  * demanding the other is the difference between an ocean and an error page - which
  * is exactly what this build did, on the only kind of device it was written for.
  */
+/**
+ * Whether this context will actually render to a texture of the given format, by
+ * trying it rather than by asking.
+ *
+ * getExtension is a question about what the driver advertises. This is the thing
+ * the renderer actually needs, and the two have been seen to disagree: an iPhone
+ * refused to start with "neither EXT_color_buffer_float nor
+ * EXT_color_buffer_half_float is available" while the diagnostic panel on the same
+ * page reported both as present. Whatever the cause of that, an allocation that
+ * comes back complete is the authority - the extension list is hearsay about it.
+ */
+function canRender(gl, internalFormat) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat, 4, 4, 0, gl.RGBA, gl.FLOAT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.deleteFramebuffer(fbo);
+  gl.deleteTexture(tex);
+  return complete;
+}
+
 function detectFormats(gl) {
-  const float32 = !!gl.getExtension('EXT_color_buffer_float');
-  const half = float32 || !!gl.getExtension('EXT_color_buffer_half_float');
+  // Ask first, because the answer is usually right and enabling the extension is
+  // what makes the format renderable in the first place. Fall through to trying it
+  // only when the answer is no, so a driver that misreports itself costs a four
+  // pixel allocation rather than the whole page.
+  const float32 = !!gl.getExtension('EXT_color_buffer_float') || canRender(gl, gl.RGBA32F);
+  const half = float32
+    || !!gl.getExtension('EXT_color_buffer_half_float')
+    || canRender(gl, gl.RGBA16F);
   return { float32, half };
+}
+
+/**
+ * A WebGL 2 context that can render the ocean, retrying once on a fresh canvas.
+ *
+ * A phone reported neither float extension while the failure page's own diagnostic
+ * - which builds a throwaway canvas with default attributes - reported both on the
+ * same device, seconds apart. A context belongs to its canvas for the life of the
+ * element and getContext hands back the one it already made, attributes and all, so
+ * the only way to ask a second time is with a new element. Asking for nothing in
+ * particular the second time is deliberate: powerPreference buys nothing on a phone
+ * with one GPU, and the attributes are the only difference between the context that
+ * failed and the one that worked.
+ */
+function acquireContext(canvas) {
+  const attributes = [
+    { antialias: false, alpha: false, powerPreference: 'high-performance' },
+    {},
+  ];
+  let best = null;
+  for (let attempt = 0; attempt < attributes.length; attempt++) {
+    if (attempt > 0) {
+      // A detached canvas has nothing to be replaced in, so one attempt is all
+      // there is; cloneNode(false) keeps the id and classes the page styles it by.
+      if (!canvas.parentNode) break;
+      const replacement = canvas.cloneNode(false);
+      canvas.replaceWith(replacement);
+      canvas = replacement;
+    }
+    const gl = canvas.getContext('webgl2', attributes[attempt]);
+    if (!gl || gl.isContextLost()) continue;
+    const formats = detectFormats(gl);
+    best = { gl, canvas, formats };
+    if (formats.half) break;
+  }
+  return best;
 }
 
 /**
@@ -272,7 +343,7 @@ function detectFormats(gl) {
  * from a fix that was never fetched - a browser cache and a broken build look
  * exactly alike.
  */
-export const BUILD = '2026-08-07.4';
+export const BUILD = '2026-08-07.5';
 
 /** Starting ceiling on the scene target, in pixels. */
 const PIXEL_BUDGET = 1.6e6;
@@ -296,12 +367,21 @@ export function describeContext(canvas) {
     ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL)
     : gl.getParameter(gl.RENDERER);
   const has = (name) => (gl.getExtension(name) ? 'yes' : 'no');
+  const lost = gl.isContextLost();
+  // What the driver advertises and what it will actually do are separate questions,
+  // and a report that only answered the first one sent us chasing an extension that
+  // was present all along. The renderable lines are the ones that decide whether
+  // this page can run; a lost context answers no to everything, hence the flag.
+  const renderable = (format) => (lost ? 'n/a' : (canRender(gl, format) ? 'yes' : 'no'));
   return [
     `build: ${BUILD}`,
     `renderer: ${renderer}`,
+    `context lost: ${lost ? 'yes' : 'no'}`,
     `EXT_color_buffer_float: ${has('EXT_color_buffer_float')}`,
     `EXT_color_buffer_half_float: ${has('EXT_color_buffer_half_float')}`,
     `OES_texture_float_linear: ${has('OES_texture_float_linear')}`,
+    `RGBA32F renderable: ${renderable(gl.RGBA32F)}`,
+    `RGBA16F renderable: ${renderable(gl.RGBA16F)}`,
     `max texture: ${gl.getParameter(gl.MAX_TEXTURE_SIZE)}`,
     `max renderbuffer: ${gl.getParameter(gl.MAX_RENDERBUFFER_SIZE)}`,
     `drawing buffer: ${gl.drawingBufferWidth}x${gl.drawingBufferHeight}`,
@@ -385,18 +465,18 @@ function target(gl, width, height, { float32 = false, tiling = false, depth = fa
 
 export class Ocean {
   constructor(canvas, options = {}) {
-    const gl = canvas.getContext('webgl2', {
-      antialias: false,
-      alpha: false,
-      powerPreference: 'high-performance',
-    });
-    if (!gl) throw new Error('WebGL 2 is not available in this browser.');
+    const acquired = acquireContext(canvas);
+    if (!acquired) throw new Error('WebGL 2 is not available in this browser.');
+    // acquireContext may have swapped the element to get a usable context, so the
+    // canvas the page handed in is not necessarily the one being drawn on.
+    const gl = acquired.gl;
+    canvas = acquired.canvas;
 
     // What the device will render into, rather than what would be convenient.
     // EXT_color_buffer_float is the nice one and a great many iPhones do not have
     // it; EXT_color_buffer_half_float is enough to run everything here, at the cost
     // of doing the transform in half precision.
-    const formats = detectFormats(gl);
+    const formats = acquired.formats;
     if (!formats.half) {
       throw new Error(
         'this device cannot render to a floating point texture, which the wave '

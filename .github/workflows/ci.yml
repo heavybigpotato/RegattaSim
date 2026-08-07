@@ -148,6 +148,16 @@ jobs:
         run: |
           node tools/web-memory-check.js http://localhost:8712/ocean/ web-memory.png 120
 
+      - name: The ocean tries the format rather than believing the extension list
+        # An iPhone refused to start for want of two extensions that the diagnostic
+        # panel on that same failure page listed as present, seconds apart. Whatever
+        # the driver was doing, the extension list cannot be what the page decides on
+        # - a float framebuffer that comes back complete is. This denies both
+        # extensions while leaving the formats genuinely renderable and asserts the
+        # ocean runs anyway.
+        run: |
+          node tools/web-lying-driver-check.js http://localhost:8712/ocean/ web-lying.png 120
+
       - name: Upload the WebGL screenshot
         if: always()
         uses: actions/upload-artifact@v4
@@ -157,6 +167,7 @@ jobs:
             web-ocean.png
             web-fallback.png
             web-memory.png
+            web-lying.png
           if-no-files-found: ignore
 
   pages:
