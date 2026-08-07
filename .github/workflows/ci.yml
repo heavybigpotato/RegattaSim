@@ -130,12 +130,24 @@ jobs:
           done
           node tools/web-ocean-check.js http://localhost:8712/ocean/ web-ocean.png 300
 
+      - name: The ocean runs on half-float-only hardware
+        # WebGL 2 makes no float format colour-renderable on its own: RGBA32F needs
+        # EXT_color_buffer_float, RGBA16F needs that or EXT_color_buffer_half_float.
+        # A desktop GPU gives you both, so code that assumes both passes every test
+        # here and shows an error page on a phone - which is what shipped. This runs
+        # the page with the good extension hidden, which is what a great many iPhones
+        # actually report.
+        run: |
+          node tools/web-fallback-check.js http://localhost:8712/ocean/ web-fallback.png 120
+
       - name: Upload the WebGL screenshot
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: web-ocean
-          path: web-ocean.png
+          path: |
+            web-ocean.png
+            web-fallback.png
           if-no-files-found: ignore
 
   pages:

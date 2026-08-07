@@ -67,6 +67,18 @@ code, so a browser is the only route onto an iPhone that costs nothing and needs
 no computer. Per §15 of the brief this is the showcase, not the game — the ban on
 an HTML/JS *engine* stands, and the native client remains the product.
 
+**Float formats are probed, not assumed.** WebGL 2 makes no floating point format
+colour-renderable by itself: `RGBA32F` needs `EXT_color_buffer_float`, and
+`RGBA16F` needs that *or* `EXT_color_buffer_half_float`. Every desktop GPU hands
+you both, so code that assumes both passes every test on a desktop and shows an
+error page on a phone. That is exactly what this build did, on the only kind of
+device it was written for. The transform now falls back to half precision when
+that is all the device has — visually indistinguishable — and every render target
+probes colour and depth format combinations rather than trusting one to work,
+because an iPhone returned `FRAMEBUFFER_UNSUPPORTED` for a combination no desktop
+driver has ever objected to. `tools/web-fallback-check.js` runs the whole page
+with the good extension hidden, and CI fails if it stops working.
+
 It was only possible because of an earlier decision made for an unrelated reason:
 the FFT runs as fragment ping-pong passes rather than compute shaders, chosen to
 cover GLES 3.0 devices. WebGL 2 has no compute shaders at all, so a compute

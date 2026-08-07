@@ -248,38 +248,115 @@ function dataTexture(gl, width, height, data) {
 }
 
 /**
- * A render target. Float32 with nearest sampling for FFT intermediates, float16
- * with linear sampling and repeat wrapping for anything the surface shader reads -
- * linear filtering of 16-bit float is core in WebGL 2, of 32-bit float it is not.
+ * What this device can actually render into.
+ *
+ * WebGL 2 makes no float format colour-renderable on its own: RGBA32F needs
+ * EXT_color_buffer_float, and RGBA16F needs *either* that or
+ * EXT_color_buffer_half_float. Desktop GPUs give you both and it is easy to write
+ * code that assumes so. A great many iPhones expose only the half-float one, and
+ * demanding the other is the difference between an ocean and an error page - which
+ * is exactly what this build did, on the only kind of device it was written for.
+ */
+function detectFormats(gl) {
+  const float32 = !!gl.getExtension('EXT_color_buffer_float');
+  const half = float32 || !!gl.getExtension('EXT_color_buffer_half_float');
+  return { float32, half };
+}
+
+/** Everything worth knowing when the page cannot start, for the failure message. */
+export function describeContext(canvas) {
+  const gl = canvas.getContext('webgl2');
+  if (!gl) {
+    const one = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+    return `WebGL 2 unavailable; WebGL 1 ${one ? 'is' : 'is not'} available`;
+  }
+  const info = gl.getExtension('WEBGL_debug_renderer_info');
+  const renderer = info
+    ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL)
+    : gl.getParameter(gl.RENDERER);
+  const has = (name) => (gl.getExtension(name) ? 'yes' : 'no');
+  return [
+    `renderer: ${renderer}`,
+    `EXT_color_buffer_float: ${has('EXT_color_buffer_float')}`,
+    `EXT_color_buffer_half_float: ${has('EXT_color_buffer_half_float')}`,
+    `OES_texture_float_linear: ${has('OES_texture_float_linear')}`,
+    `max texture: ${gl.getParameter(gl.MAX_TEXTURE_SIZE)}`,
+    `max renderbuffer: ${gl.getParameter(gl.MAX_RENDERBUFFER_SIZE)}`,
+    `drawing buffer: ${gl.drawingBufferWidth}x${gl.drawingBufferHeight}`,
+  ].join('\n');
+}
+
+/**
+ * A render target, built from whichever format combination this device accepts.
+ *
+ * Probed rather than assumed. Two things vary between devices and neither can be
+ * predicted from the extension list alone: which colour formats are renderable,
+ * and which depth attachment they will accept alongside. An iPhone returned
+ * FRAMEBUFFER_UNSUPPORTED (0x8CDD) for RGBA16F with a 16-bit depth renderbuffer -
+ * a combination every desktop driver takes without complaint. So the candidates
+ * are tried in order of preference and the first complete one wins.
+ *
+ * Float32 with nearest sampling is what the FFT intermediates want; float16 with
+ * linear sampling and repeat wrapping is what the surface shader reads, because
+ * linear filtering of 16-bit float is core in WebGL 2 and of 32-bit float it is not.
  */
 function target(gl, width, height, { float32 = false, tiling = false, depth = false } = {}) {
-  const tex = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.texImage2D(gl.TEXTURE_2D, 0, float32 ? gl.RGBA32F : gl.RGBA16F, width, height, 0,
-    gl.RGBA, gl.FLOAT, null);
-  const filter = float32 ? gl.NEAREST : gl.LINEAR;
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
-  const wrap = tiling ? gl.REPEAT : gl.CLAMP_TO_EDGE;
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrap);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrap);
+  const formats = gl.__formats || { float32: true, half: true };
+  // Preference order. Asking for 32-bit on a device that has not got it falls back
+  // to 16, which costs precision in the transform and nothing else - and a slightly
+  // noisier ocean is not in the same category of problem as no ocean.
+  const colours = [];
+  if (float32 && formats.float32) colours.push(gl.RGBA32F);
+  if (formats.half) colours.push(gl.RGBA16F);
+  if (colours.length === 0) {
+    throw new Error('no floating point colour format is renderable on this device');
+  }
 
-  const fbo = gl.createFramebuffer();
-  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
-  let depthBuffer = null;
-  if (depth) {
-    depthBuffer = gl.createRenderbuffer();
-    gl.bindRenderbuffer(gl.RENDERBUFFER, depthBuffer);
-    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, width, height);
-    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depthBuffer);
+  const depths = depth
+    ? [
+      { format: gl.DEPTH_COMPONENT24, attachment: gl.DEPTH_ATTACHMENT },
+      { format: gl.DEPTH_COMPONENT16, attachment: gl.DEPTH_ATTACHMENT },
+      { format: gl.DEPTH24_STENCIL8, attachment: gl.DEPTH_STENCIL_ATTACHMENT },
+    ]
+    : [null];
+
+  const attempts = [];
+  for (const colour of colours) {
+    for (const d of depths) {
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, colour, width, height, 0, gl.RGBA, gl.FLOAT, null);
+      // 32-bit float is only linearly filterable with an extension; 16-bit always is.
+      const filter = colour === gl.RGBA32F ? gl.NEAREST : gl.LINEAR;
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+      const wrap = tiling ? gl.REPEAT : gl.CLAMP_TO_EDGE;
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrap);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrap);
+
+      const fbo = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+      let depthBuffer = null;
+      if (d) {
+        depthBuffer = gl.createRenderbuffer();
+        gl.bindRenderbuffer(gl.RENDERBUFFER, depthBuffer);
+        gl.renderbufferStorage(gl.RENDERBUFFER, d.format, width, height);
+        gl.framebufferRenderbuffer(gl.FRAMEBUFFER, d.attachment, gl.RENDERBUFFER, depthBuffer);
+      }
+      const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      if (status === gl.FRAMEBUFFER_COMPLETE) {
+        return { tex, fbo, width, height, colour, depthBuffer };
+      }
+      attempts.push(`0x${status.toString(16)}`);
+      gl.deleteFramebuffer(fbo);
+      gl.deleteTexture(tex);
+      if (depthBuffer) gl.deleteRenderbuffer(depthBuffer);
+    }
   }
-  const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
-  if (status !== gl.FRAMEBUFFER_COMPLETE) {
-    throw new Error(`incomplete framebuffer (0x${status.toString(16)}) at ${width}x${height}`);
-  }
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  return { tex, fbo, width, height };
+  throw new Error(
+    `no usable framebuffer at ${width}x${height} (tried ${attempts.join(', ')})`);
 }
 
 // --- the ocean --------------------------------------------------------------
@@ -292,9 +369,24 @@ export class Ocean {
       powerPreference: 'high-performance',
     });
     if (!gl) throw new Error('WebGL 2 is not available in this browser.');
-    if (!gl.getExtension('EXT_color_buffer_float')) {
-      throw new Error('EXT_color_buffer_float is unavailable, so the FFT cannot run.');
+
+    // What the device will render into, rather than what would be convenient.
+    // EXT_color_buffer_float is the nice one and a great many iPhones do not have
+    // it; EXT_color_buffer_half_float is enough to run everything here, at the cost
+    // of doing the transform in half precision.
+    const formats = detectFormats(gl);
+    if (!formats.half) {
+      throw new Error(
+        'this device cannot render to a floating point texture, which the wave '
+        + 'transform needs (neither EXT_color_buffer_float nor '
+        + 'EXT_color_buffer_half_float is available)');
     }
+    gl.__formats = formats;
+    this.formats = formats;
+    // Linear filtering of 32-bit float is an extension too. Without it the
+    // displacement maps have to stay 16-bit whatever else is available, which they
+    // already are - this is asked for so the flag is accurate, not to gate anything.
+    gl.getExtension('OES_texture_float_linear');
     this.gl = gl;
     this.canvas = canvas;
 
@@ -584,6 +676,10 @@ export class Ocean {
       patch,
       h0: dataTexture(gl, n, n, S.initialSpectrum(sea, settings, i)),
       wave: dataTexture(gl, n, n, S.waveData(sea, settings, i)),
+      // Full precision if the device has it. On half-float-only hardware these come
+      // back as RGBA16F and the transform runs in half precision: about three
+      // decimal digits per butterfly stage, which shows up as a slightly noisier
+      // wave field and nothing else.
       spatialA: this.cascades?.[i]?.spatialA || target(gl, n, n, { float32: true }),
       spatialB: this.cascades?.[i]?.spatialB || target(gl, n, n, { float32: true }),
       displacement: this.cascades?.[i]?.displacement || target(gl, n, n, { tiling: true }),
@@ -618,7 +714,17 @@ export class Ocean {
     // Cap the backing store: a modern phone reports a device pixel ratio of 3,
     // and the ocean is fill-rate bound, so rendering at native density costs
     // nine times the pixels for detail the display cannot resolve on water.
-    const ratio = Math.min(window.devicePixelRatio || 1, 2);
+    let ratio = Math.min(window.devicePixelRatio || 1, 2);
+    // And a ceiling on the total, not just the density. A large phone at ratio 2 is
+    // over two million pixels of half-float scene target, bloom chain and depth,
+    // which is both the fill rate this renderer is short of and the memory a device
+    // that is already struggling has least of. Scaled down rather than clamped, so
+    // the aspect ratio is untouched.
+    const budget = 1.6e6;
+    const wanted = this.canvas.clientWidth * this.canvas.clientHeight * ratio * ratio;
+    if (wanted > budget) {
+      ratio *= Math.sqrt(budget / wanted);
+    }
     const width = Math.max(1, Math.floor(this.canvas.clientWidth * ratio));
     const height = Math.max(1, Math.floor(this.canvas.clientHeight * ratio));
     if (this.canvas.width === width && this.canvas.height === height && this.scene) return;

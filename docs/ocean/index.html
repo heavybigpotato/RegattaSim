@@ -126,13 +126,17 @@
 <div id="message"><div>
   <h1>This browser cannot run the ocean</h1>
   <p id="messageText"></p>
-  <p>The simulation needs WebGL 2 with floating point render targets. On iOS that
+  <p>The simulation needs WebGL 2 and a floating point render target. On iOS that
   means Safari 15 or later; on Android, Chrome 56 or later.</p>
   <p><a href="../">Back to the showcase</a></p>
+  <details>
+    <summary>What this device reports</summary>
+    <pre id="capabilities"></pre>
+  </details>
 </div></div>
 
 <script type="module">
-import { Ocean } from './ocean.js';
+import { Ocean, describeContext } from './ocean.js';
 import { seaState } from './spectrum.js';
 import { loadPolar, Boat } from './sailing.js';
 
@@ -141,6 +145,15 @@ const canvas = document.getElementById('sea');
 
 function fail(text) {
   document.getElementById('messageText').textContent = text;
+  // What the device actually has, not what it was asked for. Nobody can debug a
+  // graphics failure on someone else's phone from a single sentence, and this page
+  // exists precisely for people whose only computer is that phone.
+  try {
+    document.getElementById('capabilities').textContent =
+      describeContext(document.createElement('canvas'));
+  } catch (e) {
+    document.getElementById('capabilities').textContent = 'unavailable: ' + e.message;
+  }
   document.getElementById('message').style.display = 'flex';
 }
 
