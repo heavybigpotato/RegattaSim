@@ -140,6 +140,14 @@ jobs:
         run: |
           node tools/web-fallback-check.js http://localhost:8712/ocean/ web-fallback.png 120
 
+      - name: The ocean shrinks rather than failing when memory is short
+        # A phone with a dozen tabs open refuses the render targets this asks for at
+        # full size and grants them at half. Taking the first refusal as fatal traded
+        # the whole ocean for a shadow map. This caps how large a framebuffer the page
+        # may allocate and asserts it still sails.
+        run: |
+          node tools/web-memory-check.js http://localhost:8712/ocean/ web-memory.png 120
+
       - name: Upload the WebGL screenshot
         if: always()
         uses: actions/upload-artifact@v4
@@ -148,6 +156,7 @@ jobs:
           path: |
             web-ocean.png
             web-fallback.png
+            web-memory.png
           if-no-files-found: ignore
 
   pages:

@@ -272,7 +272,17 @@ function detectFormats(gl) {
  * from a fix that was never fetched - a browser cache and a broken build look
  * exactly alike.
  */
-export const BUILD = '2026-08-07.3';
+export const BUILD = '2026-08-07.4';
+
+/** Starting ceiling on the scene target, in pixels. */
+const PIXEL_BUDGET = 1.6e6;
+
+/**
+ * Floor for that ceiling. Below this the picture is too coarse to be worth showing
+ * and the device is not going to run this renderer at all, so the allocation
+ * failure is reported rather than shrunk away from any further.
+ */
+const MINIMUM_PIXEL_BUDGET = 1.2e5;
 
 /** Everything worth knowing when the page cannot start, for the failure message. */
 export function describeContext(canvas) {
@@ -416,6 +426,11 @@ export class Ocean {
 
     this.time = options.time ?? 0;
     this.exposure = 1;
+    /**
+     * Ceiling on the scene target, in pixels. Lowered - and left lowered - if the
+     * device turns out not to have the memory for it. See resize().
+     */
+    this.pixelBudget = options.pixelBudget ?? PIXEL_BUDGET;
     /** Attach a Boat from sailing.js to switch to chase view and draw a hull. */
     this.boat = null;
     /** Extra yaw applied to the chase camera, so the player can look around. */
@@ -511,7 +526,25 @@ export class Ocean {
       sail: this.uploadMesh(buildSails(this.hullGeometry, 0.35)),
     };
     this.sailSheetAngle = 0.35;
-    this.shadowMap = target(gl, SHADOW_SIZE, SHADOW_SIZE, { depth: true });
+
+    // A shadow map is a luxury, and a megapixel of it is the single largest thing
+    // this renderer asks a device for after the scene target. On a phone short of
+    // memory the request is refused, and taking that as fatal would trade the whole
+    // ocean for a shadow. Halve it instead, and sail without one rather than not at
+    // all - bindShadow already has a path for that, because the sun going below the
+    // horizon needs the same thing.
+    this.shadowMap = null;
+    this.shadowSize = 0;
+    for (let size = SHADOW_SIZE; size >= SHADOW_SIZE / 4; size /= 2) {
+      try {
+        this.shadowMap = target(gl, size, size, { depth: true });
+        this.shadowSize = size;
+        break;
+      } catch (error) {
+        // Try the next size down; the last failure falls out of the loop with no
+        // shadow map, which is a picture without shadows rather than no picture.
+      }
+    }
     this.lightViewProjection = mat4Identity();
   }
 
@@ -525,6 +558,9 @@ export class Ocean {
   renderShadowMap(sun) {
     const gl = this.gl;
     const b = this.boat;
+    // No map means the device would not give us one; bindShadow turns the lookup
+    // off to match.
+    if (!this.shadowMap) return;
     // The box has to hold the boat *and* the shadow it throws, and how far that
     // reaches depends entirely on how low the sun is: a rig 19 m tall lays its shadow
     // 37 m away at a 26 degree sun and twice that an hour later. Sizing the box for
@@ -555,7 +591,7 @@ export class Ocean {
     const view = mat4LookAt(eye, dir, up);
     const projection = mat4Ortho(extent, 0.1, extent * 5);
     this.lightViewProjection = mat4Multiply(projection, view);
-    this.shadowTexelSize = (2 * extent) / SHADOW_SIZE;
+    this.shadowTexelSize = (2 * extent) / this.shadowSize;
 
     this.bindTarget(this.shadowMap);
     // Cleared to 1, which reads as "nothing between here and the sun".
@@ -580,6 +616,7 @@ export class Ocean {
   /** Binds the shadow map and its matrix on a program that includes lib_shadow. */
   bindShadow(p, unit, strength) {
     const gl = this.gl;
+    if (!this.shadowMap) strength = 0;
     if (strength > 0) {
       this.bindTexture(unit, this.shadowMap.tex, p, 'u_shadowMap');
     } else {
@@ -588,7 +625,7 @@ export class Ocean {
       this.bindTexture(unit, this.cascades[0].displacement.tex, p, 'u_shadowMap');
     }
     gl.uniformMatrix4fv(p.u.u_lightViewProjection, false, this.lightViewProjection);
-    gl.uniform1f(p.u.u_shadowTexel, 1 / SHADOW_SIZE);
+    gl.uniform1f(p.u.u_shadowTexel, 1 / (this.shadowSize || SHADOW_SIZE));
     gl.uniform1f(p.u.u_shadowStrength, strength);
   }
 
@@ -721,27 +758,32 @@ export class Ocean {
     this.exposure = snap ? targetExposure : this.exposure + (targetExposure - this.exposure) * 0.05;
   }
 
+  /**
+   * Backing store size for a given pixel budget.
+   *
+   * A modern phone reports a device pixel ratio of 3, and the ocean is fill-rate
+   * bound, so rendering at native density costs nine times the pixels for detail
+   * the display cannot resolve on water. There is a ceiling on the total as well as
+   * the density: a large phone at ratio 2 is over two million pixels of half-float
+   * scene target and depth, which is both the fill rate this renderer is short of
+   * and the memory a struggling device has least of. Scaled rather than clamped, so
+   * the aspect ratio is untouched.
+   */
+  backingStore(budget) {
+    let ratio = Math.min(window.devicePixelRatio || 1, 2);
+    const wanted = this.canvas.clientWidth * this.canvas.clientHeight * ratio * ratio;
+    if (wanted > budget) ratio *= Math.sqrt(budget / wanted);
+    return [
+      Math.max(1, Math.floor(this.canvas.clientWidth * ratio)),
+      Math.max(1, Math.floor(this.canvas.clientHeight * ratio)),
+    ];
+  }
+
   resize() {
     const gl = this.gl;
-    // Cap the backing store: a modern phone reports a device pixel ratio of 3,
-    // and the ocean is fill-rate bound, so rendering at native density costs
-    // nine times the pixels for detail the display cannot resolve on water.
-    let ratio = Math.min(window.devicePixelRatio || 1, 2);
-    // And a ceiling on the total, not just the density. A large phone at ratio 2 is
-    // over two million pixels of half-float scene target, bloom chain and depth,
-    // which is both the fill rate this renderer is short of and the memory a device
-    // that is already struggling has least of. Scaled down rather than clamped, so
-    // the aspect ratio is untouched.
-    const budget = 1.6e6;
-    const wanted = this.canvas.clientWidth * this.canvas.clientHeight * ratio * ratio;
-    if (wanted > budget) {
-      ratio *= Math.sqrt(budget / wanted);
-    }
-    const width = Math.max(1, Math.floor(this.canvas.clientWidth * ratio));
-    const height = Math.max(1, Math.floor(this.canvas.clientHeight * ratio));
+    let [width, height] = this.backingStore(this.pixelBudget);
     if (this.canvas.width === width && this.canvas.height === height && this.scene) return;
-    this.canvas.width = width;
-    this.canvas.height = height;
+
     if (this.scene) {
       gl.deleteTexture(this.scene.tex);
       gl.deleteFramebuffer(this.scene.fbo);
@@ -751,8 +793,33 @@ export class Ocean {
       // its memory budget, and died with an incomplete framebuffer or a lost
       // context. That is the whole of the "it plays and then crashes" report.
       if (this.scene.depthBuffer) gl.deleteRenderbuffer(this.scene.depthBuffer);
+      this.scene = null;
     }
-    this.scene = target(gl, width, height, { depth: true });
+
+    // Give up resolution before giving up entirely. A device short of memory - a
+    // phone with a dozen other tabs open, which is the normal state of a phone -
+    // refuses the allocation at full size and takes it at half, so the choice here
+    // is between a smaller ocean and no ocean. The reduced budget is kept rather
+    // than retried at full size on the next resize: whatever made the memory scarce
+    // is unlikely to have gone away, and thrashing between the two would be worse
+    // than either.
+    for (;;) {
+      this.canvas.width = width;
+      this.canvas.height = height;
+      try {
+        this.scene = target(gl, width, height, { depth: true });
+        return;
+      } catch (error) {
+        if (this.pixelBudget <= MINIMUM_PIXEL_BUDGET) throw error;
+        // Measured against what was just refused, not against the budget. The
+        // budget is only a ceiling, so the failure can happen well under it - and
+        // halving a ceiling nothing was touching would retry at exactly the size
+        // that just failed, forever.
+        this.pixelBudget = Math.max(
+          MINIMUM_PIXEL_BUDGET, Math.min(this.pixelBudget, width * height) * 0.5);
+        [width, height] = this.backingStore(this.pixelBudget);
+      }
+    }
   }
 
   drawQuad(p) {
