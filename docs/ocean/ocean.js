@@ -263,6 +263,17 @@ function detectFormats(gl) {
   return { float32, half };
 }
 
+/**
+ * Build marker, shown on the failure page.
+ *
+ * Bumped whenever something here changes that a phone would experience. The only
+ * feedback channel for this page is a screenshot from someone else's device, and
+ * without a version in the frame there is no way to tell a fix that did not work
+ * from a fix that was never fetched - a browser cache and a broken build look
+ * exactly alike.
+ */
+export const BUILD = '2026-08-07.3';
+
 /** Everything worth knowing when the page cannot start, for the failure message. */
 export function describeContext(canvas) {
   const gl = canvas.getContext('webgl2');
@@ -276,6 +287,7 @@ export function describeContext(canvas) {
     : gl.getParameter(gl.RENDERER);
   const has = (name) => (gl.getExtension(name) ? 'yes' : 'no');
   return [
+    `build: ${BUILD}`,
     `renderer: ${renderer}`,
     `EXT_color_buffer_float: ${has('EXT_color_buffer_float')}`,
     `EXT_color_buffer_half_float: ${has('EXT_color_buffer_half_float')}`,
@@ -733,6 +745,12 @@ export class Ocean {
     if (this.scene) {
       gl.deleteTexture(this.scene.tex);
       gl.deleteFramebuffer(this.scene.fbo);
+      // The depth renderbuffer too. Leaving it leaked a couple of megabytes every
+      // time the canvas changed size, and on a phone the address bar collapsing and
+      // reappearing does that repeatedly - so the page ran for a few seconds, ate
+      // its memory budget, and died with an incomplete framebuffer or a lost
+      // context. That is the whole of the "it plays and then crashes" report.
+      if (this.scene.depthBuffer) gl.deleteRenderbuffer(this.scene.depthBuffer);
     }
     this.scene = target(gl, width, height, { depth: true });
   }
@@ -881,8 +899,11 @@ export class Ocean {
                              Math.cos(b.heading - this.smoothedHeading));
     this.smoothedHeading += error * 0.04;
 
-    const back = this.chaseDistance ?? 26;
-    const height = this.chaseHeight ?? 7.5;
+    // Stand further off in a big sea. At Hs 12 m a boat 26 m away is behind the
+    // next crest half the time, and the frame is all water.
+    const seaScale = 1 + 0.55 * Math.max(0, this.sea.significantWaveHeight - 2);
+    const back = (this.chaseDistance ?? 26) + 0.9 * seaScale;
+    const height = (this.chaseHeight ?? 7.5) + 0.7 * seaScale;
     // Off the quarter rather than dead astern. From directly behind, a 12 m hull
     // foreshortens into a wedge and the sail is edge-on; a quarter view shows the
     // length of one and the camber of the other, which is why every photograph of
@@ -893,6 +914,15 @@ export class Ocean {
       b.heave + height,
       b.z - Math.sin(yaw) * back,
     ];
+
+    // Keep the camera out of the water. It follows the boat's heave, and in a big
+    // sea the boat can be deep in a trough while the crest behind it - which is
+    // where the camera is - stands several metres higher. The eye then ends up
+    // under the surface, looking up through it at the bottom of the hull, which is
+    // exactly as broken as it sounds and is what a player actually sees first.
+    const surfaceAtEye = this.surfaceHeightAt(eye[0], eye[2]);
+    eye[1] = Math.max(eye[1], surfaceAtEye + 2.0);
+
     const target = [b.x, b.heave + 3.5, b.z];
     const dir = normalise([target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]]);
 

@@ -149,7 +149,7 @@ public final class SailingBoat {
             step(trueWindSpeed, windToward);
             accumulator -= STEP;
         }
-        readAttitude(surface);
+        readAttitude(surface, Math.min(deltaTime, 0.25));
     }
 
     private void step(double trueWindSpeed, double windToward) {
@@ -208,10 +208,31 @@ public final class SailingBoat {
     }
 
     /**
+     * Time constant for pitch and roll to follow the wave slope, seconds.
+     *
+     * <p>A hull does not snap to the surface under it. A 40 footer has a natural
+     * roll period of three or four seconds and a pitch period not far off, so it
+     * lags the slope it is sitting on and never quite reaches it before the wave has
+     * moved on. Reading the plane fit straight out - which this did - is fine in a
+     * two metre sea and violent in a twelve metre one: the boat snaps through forty
+     * degrees between frames and reads as broken rather than as pressed.
+     */
+    private static final double ATTITUDE_TIME_CONSTANT = 0.7;
+
+    /**
+     * Beyond this the boat is not sailing, it is capsizing, and Phase 5 owns that.
+     * Until then the angle is held here rather than allowed to run to whatever a
+     * steep wave face asks for.
+     */
+    private static final double MAXIMUM_ATTITUDE = Math.toRadians(65);
+
+    /**
      * Fits a plane through four points on the hull and reads heave, pitch and roll
      * from it.
+     *
+     * @param deltaTime frame time, seconds, for the lag on pitch and roll
      */
-    private void readAttitude(WaveSurface surface) {
+    private void readAttitude(WaveSurface surface, double deltaTime) {
         double halfLength = hull.length * 0.5;
         double halfBeam = hull.beam * 0.5;
         double cos = Math.cos(heading);
@@ -224,12 +245,24 @@ public final class SailingBoat {
         double starboard = surface.heightAt(x + sin * halfBeam, z - cos * halfBeam);
         double port = surface.heightAt(x - sin * halfBeam, z + cos * halfBeam);
 
+        // Heave is not lagged: a hull really does follow the surface up and down,
+        // and damping it would have the boat swimming through crests.
         heave = 0.25 * (bow + stern + starboard + port);
-        // Bow up is positive pitch.
-        pitch = Math.atan2(bow - stern, hull.length);
-        // Starboard down is positive roll. The wave slope tips the boat about the
-        // angle the rig is already holding it at, so the two add.
-        roll = Math.atan2(starboard - port, hull.beam) + windHeel;
+
+        // Bow up is positive pitch. Starboard down is positive roll, and the wave
+        // slope tips the boat about the angle the rig is already holding it at, so
+        // the two add.
+        double targetPitch = clampAttitude(Math.atan2(bow - stern, hull.length));
+        double targetRoll = clampAttitude(
+                Math.atan2(starboard - port, hull.beam) + windHeel);
+
+        double rate = 1.0 - Math.exp(-deltaTime / ATTITUDE_TIME_CONSTANT);
+        pitch += (targetPitch - pitch) * rate;
+        roll += (targetRoll - roll) * rate;
+    }
+
+    private static double clampAttitude(double angle) {
+        return Math.max(-MAXIMUM_ATTITUDE, Math.min(MAXIMUM_ATTITUDE, angle));
     }
 
     // --- state --------------------------------------------------------------

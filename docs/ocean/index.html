@@ -95,7 +95,7 @@
 <div id="hud">
   <span><b id="hudSpeed">-</b> kt &nbsp; TWA <b id="hudTwa">-</b>&deg; &nbsp; <b id="hudTack">-</b>
     &nbsp; heel <b id="hudHeel">-</b>&deg;</span>
-  <span><b id="hudHs">-</b> m &nbsp; <b id="hudFps">-</b> fps</span>
+  <span><b id="hudHs">-</b> m &nbsp; <b id="hudFps">-</b> fps &nbsp; <span id="hudBuild"></span></span>
 </div>
 
 <button id="toggle" aria-label="Show or hide controls">☰</button>
@@ -136,12 +136,13 @@
 </div></div>
 
 <script type="module">
-import { Ocean, describeContext } from './ocean.js';
+import { Ocean, describeContext, BUILD } from './ocean.js';
 import { seaState } from './spectrum.js';
 import { loadPolar, Boat } from './sailing.js';
 
 const KNOTS = 0.514444;
 const canvas = document.getElementById('sea');
+document.getElementById('hudBuild').textContent = BUILD;
 
 function fail(text) {
   document.getElementById('messageText').textContent = text;
@@ -156,6 +157,15 @@ function fail(text) {
   }
   document.getElementById('message').style.display = 'flex';
 }
+
+// iOS reclaims WebGL contexts under memory pressure, and a page that just stops
+// with no explanation is indistinguishable from a crash. Preventing the default
+// keeps the canvas alive so a reload can restore it.
+canvas.addEventListener('webglcontextlost', (event) => {
+  event.preventDefault();
+  fail('the browser took the graphics context back, usually because the device ran '
+    + 'short of memory. Reload to start again.');
+});
 
 let ocean;
 try {
@@ -263,13 +273,13 @@ function scheduleRebuild() {
       windSpeed: +wind.value * KNOTS,
       swellHeight: +swell.value,
     }));
-    hudHs.textContent = `${ocean.sea.significantWaveHeight.toFixed(1)} m`;
+    hudHs.textContent = ocean.sea.significantWaveHeight.toFixed(1);
   }, 140);
 }
 for (const el of [wind, sun, swell]) {
   el.addEventListener('input', scheduleRebuild);
 }
-hudHs.textContent = `${ocean.sea.significantWaveHeight.toFixed(1)} m`;
+hudHs.textContent = ocean.sea.significantWaveHeight.toFixed(1);
 
 const panel = document.getElementById('panel');
 document.getElementById('toggle').addEventListener('click', () => {

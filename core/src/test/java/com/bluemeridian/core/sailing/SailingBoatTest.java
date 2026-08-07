@@ -257,11 +257,64 @@ class SailingBoatTest {
     void flatWaterLeavesOnlyTheHeel() {
         SailingBoat b = boat();
         b.setPosition(3, -7, 1.1);
-        sail(b, 5, 10);
+        // Long enough for both lags to settle - the heel building against the rig,
+        // and the roll following the heel. Five seconds is not: the roll is still
+        // half a degree behind, which is the damping working rather than a fault.
+        sail(b, 60, 10);
         assertEquals(0.0, b.heave(), 1e-6);
-        assertEquals(0.0, b.pitch(), 1e-9);
+        assertEquals(0.0, b.pitch(), 1e-6);
         // Flat water contributes nothing to the roll, so whatever is left is the rig.
-        assertEquals(b.windHeel(), b.roll(), 1e-9);
+        assertEquals(b.windHeel(), b.roll(), 1e-4);
+    }
+
+    @Test
+    @DisplayName("the hull lags the wave slope instead of snapping to it")
+    void attitudeIsDamped() {
+        // A hull has rotational inertia: it never quite reaches the slope it is
+        // sitting on before the wave has moved on. Reading the plane fit straight
+        // out is fine in a two metre sea and violent in a twelve metre one - the
+        // boat snapped through forty degrees between frames and looked broken, which
+        // is what a player reported.
+        //
+        // A short, steep swell is the case that exposes it: the slope under the hull
+        // reverses every couple of seconds, so an undamped boat would track it and a
+        // damped one cannot.
+        WaveSurface steep = WaveSurface.sine(3.0, 26.0, 0.0, 0.0);
+        SailingBoat b = boat();
+        b.setPosition(0, 0, Math.PI / 2);        // beam on, so the swell rolls her
+
+        double worstRate = 0;
+        double previousRoll = b.roll();
+        for (double t = 0; t < 30; t += 0.05) {
+            b.advance(0.05, 1e-6, WIND_TOWARD, steep, t);
+            worstRate = Math.max(worstRate, Math.abs(b.roll() - previousRoll) / 0.05);
+            previousRoll = b.roll();
+        }
+
+        // The undamped version reached several radians per second here. A real boat
+        // of this size rolls at well under one.
+        assertTrue(worstRate < 1.0,
+                "the boat rolled at " + Math.toDegrees(worstRate) + " deg/s, which is a snap");
+        assertTrue(worstRate > 0.02,
+                "but it must still answer the sea at all, got "
+                        + Math.toDegrees(worstRate) + " deg/s");
+    }
+
+    @Test
+    @DisplayName("no sea can knock the boat past the angle it would capsize at")
+    void attitudeIsBounded() {
+        // Phase 5 owns capsize. Until then the angle is held rather than allowed to
+        // run to whatever a near-vertical wave face asks for.
+        WaveSurface enormous = WaveSurface.sine(9.0, 22.0, 0.4, 0.0);
+        SailingBoat b = boat();
+        b.setPosition(0, 0, Math.PI / 2);
+        for (double t = 0; t < 60; t += 0.05) {
+            b.advance(0.05, 30 * KNOTS, WIND_TOWARD, enormous, t);
+            assertTrue(Math.abs(b.roll()) <= Math.toRadians(66),
+                    "rolled to " + Math.toDegrees(b.roll()) + " degrees");
+            assertTrue(Math.abs(b.pitch()) <= Math.toRadians(66),
+                    "pitched to " + Math.toDegrees(b.pitch()) + " degrees");
+        }
     }
 
     @Test
