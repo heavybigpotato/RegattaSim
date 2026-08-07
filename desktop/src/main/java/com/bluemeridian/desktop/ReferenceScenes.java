@@ -131,11 +131,17 @@ public final class ReferenceScenes {
                 // shaders, same sailing model, drawn by the native renderer. The
                 // wind blows toward +X, so it arrives from 180 degrees and a heading
                 // of -130 puts it 50 degrees off the starboard bow.
+                //
+                // The sun is deliberately abeam of the camera rather than behind it.
+                // Back light flatters a hull and hides everything this scene is meant
+                // to show: side light is what reveals the sections, and it is the only
+                // arrangement that puts the rig's shadow across open water where it
+                // can be seen instead of underneath the boat.
                 new Scene("07-close-hauled",
                         new SeaState(18.0 * KNOTS, Math.toRadians(0), 250_000, 3.3, 3000,
                                 1.6, 11.0, Math.toRadians(15), 0.07, 30, 1.0, 200, 40_040L),
                         6.5f, (float) Math.toRadians(32), (float) Math.toRadians(-9),
-                        (float) Math.toRadians(21), (float) Math.toRadians(120),
+                        (float) Math.toRadians(19), (float) Math.toRadians(172),
                         2.5f, 0.34f, 96.0f,
                         true, (float) -(Math.PI - Math.toRadians(50))),
         };
