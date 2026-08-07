@@ -21,6 +21,7 @@
 #pragma include "lib_ocean_common.glsl"
 #pragma include "lib_sky.glsl"
 #pragma include "lib_noise.glsl"
+#pragma include "lib_shadow.glsl"
 
 in vec3 v_worldPosition;
 in vec3 v_undisplacedPosition;
@@ -120,7 +121,11 @@ void main() {
     // The GGX lobe is already normalised, so this is a plain intensity for the
     // solar disc. Pushed harder the sun track stops being glitter on facets and
     // becomes a row of blown white discs.
-    reflection += u_sunColour * ggxSpecular(n, v, u_sunDirection, roughness) * 1.6;
+    // How much sun reaches this patch of water. Nothing else in the scene casts,
+    // so this is the boat's shadow and only the boat's - a long dark stripe running
+    // away to leeward, which is the cue that puts the hull *in* the water.
+    float sunlit = sunVisibility(v_worldPosition, max(dot(n, u_sunDirection), 0.0));
+    reflection += u_sunColour * ggxSpecular(n, v, u_sunDirection, roughness) * 1.6 * sunlit;
 
     // --- Transmission and subsurface scattering ---------------------------
     // Height above the mean surface drives the scattering: a crest is a thin
@@ -135,7 +140,10 @@ void main() {
     // A weaker, view-independent term so troughs are not pure black.
     scatter += 0.35 * max(0.0, dot(n, v));
 
-    vec3 transmitted = u_scatterColour * scatter * u_sunColour;
+    // Scattering is light coming up through the wave from the far side, so the
+    // shadow kills it too - a shadowed crest loses its glow, which is most of what
+    // makes the stripe read as a shadow rather than as a dark patch of water.
+    vec3 transmitted = u_scatterColour * scatter * u_sunColour * sunlit;
 
     // Beer-Lambert through the water column to whatever is beneath. In the open
     // ocean this saturates to the deep colour within a few metres, which is why
@@ -153,7 +161,7 @@ void main() {
         // Foam appears where the accumulated value exceeds the local threshold of
         // the noise field, so rafts grow and shrink instead of fading uniformly.
         float mask = smoothstep(1.0 - coverage - 0.15, 1.0 - coverage + 0.15, pattern);
-        vec3 foamLit = vec3(0.85) * (max(0.25, dot(n, u_sunDirection)) * u_sunColour
+        vec3 foamLit = vec3(0.85) * (max(0.25, dot(n, u_sunDirection)) * u_sunColour * sunlit
                                      + averageSky * 0.35);
         colour = mix(colour, foamLit, mask * coverage);
     }

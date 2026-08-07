@@ -48,6 +48,23 @@ tasks.register('dumpSpectrum', JavaExec) {
     mainClass = 'com.bluemeridian.core.tools.SpectrumDump'
 }
 
+// Bakes the hull for the browser. Unlike the spectrum and the sailing model, the
+// geometry is static and nothing but the renderer consumes it, so a hand
+// transliteration would be six hundred lines of duplication kept in step by a
+// checksum with nothing gained. One definition, one set of vertices.
+tasks.register('generateWebBoat', JavaExec) {
+    description = 'Writes docs/ocean/boat-hull.js from HullLoft.'
+    group = 'build'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.bluemeridian.core.tools.BoatMeshDump'
+    def output = rootProject.file('docs/ocean/boat-hull.js')
+    outputs.file output
+    doFirst {
+        output.parentFile.mkdirs()
+        standardOutput = new FileOutputStream(output)
+    }
+}
+
 // Emits the polar tables as a JavaScript module for the WebGL showcase, from the
 // same CSV the JVM parses. Same reasoning as the shader bundle: a hand-copied
 // table would drift, and then the browser would be sailing a different boat.

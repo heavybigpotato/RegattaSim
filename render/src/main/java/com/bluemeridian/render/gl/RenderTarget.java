@@ -66,6 +66,25 @@ public final class RenderTarget implements Disposable {
         return new RenderTarget(fb, width, height);
     }
 
+    /**
+     * Half precision, linearly filtered, clamped, with depth: for the shadow map.
+     *
+     * <p>Clamped rather than tiling, because a shadow lookup that wraps would put
+     * the boat's shadow on the far side of the map. Linear filtering is what makes
+     * the percentage-closer filter cheap - it is doing part of the averaging in the
+     * sampler - and half precision is plenty for a depth that spans forty metres.
+     */
+    public static RenderTarget shadowMap(int size) {
+        FrameBuffer fb = new GLFrameBuffer.FrameBufferBuilder(size, size)
+                .addFloatAttachment(GL30.GL_RGBA16F, GL30.GL_RGBA, GL20.GL_FLOAT, false)
+                .addDepthRenderBuffer(GL20.GL_DEPTH_COMPONENT16)
+                .build();
+        Texture t = fb.getColorBufferTexture();
+        t.setFilter(Texture.TextureFilter.Linear, Texture.TextureFilter.Linear);
+        t.setWrap(Texture.TextureWrap.ClampToEdge, Texture.TextureWrap.ClampToEdge);
+        return new RenderTarget(fb, size, size);
+    }
+
     public Texture texture() {
         return frameBuffer.getColorBufferTexture();
     }

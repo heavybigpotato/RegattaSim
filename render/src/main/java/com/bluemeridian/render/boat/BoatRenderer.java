@@ -9,10 +9,12 @@ import com.badlogic.gdx.graphics.VertexAttributes;
 import com.badlogic.gdx.graphics.glutils.ShaderProgram;
 import com.badlogic.gdx.math.Matrix3;
 import com.badlogic.gdx.math.Matrix4;
+import com.badlogic.gdx.math.Vector3;
 import com.badlogic.gdx.utils.Disposable;
 import com.bluemeridian.core.boat.BoatMesh;
 import com.bluemeridian.core.boat.HullLoft;
 import com.bluemeridian.core.sailing.SailingBoat;
+import com.bluemeridian.render.gl.RenderTarget;
 import com.bluemeridian.render.gl.ShaderSources;
 import com.bluemeridian.render.sky.SunLight;
 
@@ -35,14 +37,53 @@ public final class BoatRenderer implements Disposable {
     /** How far the sheet must move before the sails are rebuilt, radians. */
     private static final double SHEET_HYSTERESIS = Math.toRadians(1.0);
 
+    /**
+     * How dark a shadow goes.
+     *
+     * <p>Not 1. A shadow outdoors is never black - it is lit by the whole sky dome
+     * and, on the water, by light scattering in from all around it. Blocking the sun
+     * entirely gives the hard, dead shadows of a scene with a single light in a void.
+     */
+    public static final float SHADOW_STRENGTH = 0.86f;
+
+    /**
+     * Shadow map resolution.
+     *
+     * <p>One caster, twenty metres tall, filling a box a little over forty metres
+     * across. At 1024 that is a texel every four centimetres, which resolves a
+     * shroud; the next size up resolves nothing more that is visible and costs four
+     * times the fill.
+     */
+    private static final int SHADOW_SIZE = 1024;
+
+    /** Smallest box the shadow camera covers, metres. Holds the boat and the rig. */
+    private static final float SHADOW_MINIMUM_EXTENT = 22f;
+    /**
+     * Largest box, metres.
+     *
+     * <p>The shadow of a rig at sunset is hundreds of metres long, and following it
+     * all the way would leave a texel the size of a cockpit. Past this the far end of
+     * the shadow is simply not drawn, which is far less noticeable than the whole
+     * thing turning to blocks.
+     */
+    private static final float SHADOW_MAXIMUM_EXTENT = 65f;
+    /** Height of the rig above the waterline, for sizing the shadow's reach. */
+    private static final float RIG_HEIGHT = 19f;
+
     private final HullLoft loft;
     private final ShaderProgram program;
+    private final ShaderProgram shadowProgram;
+    private final RenderTarget shadowMap;
     private final Mesh hull;
     private Mesh sails;
 
     private final Matrix4 model = new Matrix4();
     private final Matrix3 normalMatrix = new Matrix3();
+    private final Matrix4 lightViewProjection = new Matrix4();
+    private final Vector3 lightTarget = new Vector3();
+    private final Vector3 lightEye = new Vector3();
     private double sheetAngle = Double.NaN;
+    private float speed;
 
     public BoatRenderer() {
         this(HullLoft.class40());
@@ -51,8 +92,104 @@ public final class BoatRenderer implements Disposable {
     public BoatRenderer(HullLoft loft) {
         this.loft = loft;
         this.program = ShaderSources.program("boat.vert", "boat.frag");
+        this.shadowProgram = ShaderSources.program("shadow_depth.vert", "shadow_depth.frag");
+        this.shadowMap = RenderTarget.shadowMap(SHADOW_SIZE);
         this.hull = upload(loft.hull());
         setSheetAngle(0.35);
+    }
+
+    /** The depth map from the sun's point of view, for whoever needs to be shadowed. */
+    public RenderTarget shadowMap() {
+        return shadowMap;
+    }
+
+    public Matrix4 lightViewProjection() {
+        return lightViewProjection;
+    }
+
+    public float shadowTexel() {
+        return 1f / SHADOW_SIZE;
+    }
+
+    /**
+     * Renders the boat into the shadow map from the sun's direction.
+     *
+     * <p>Must run before anything that samples it, and outside any other target's
+     * binding. The camera is orthographic and fitted to a box around the boat - it
+     * follows her, so the map never has to cover more than one boat's worth of world
+     * however far she has sailed.
+     */
+    public void renderShadowMap(SailingBoat boat, SunLight sun) {
+        sheetFor(boat.wind().angle);
+        this.speed = (float) boat.speed();
+        renderShadowMap(boat.x(), boat.heave(), boat.z(),
+                boat.heading(), boat.pitch(), boat.roll(), sun);
+    }
+
+    /** Renders the shadow map for a boat at an explicit position and attitude. */
+    public void renderShadowMap(double x, double y, double z,
+            double heading, double pitch, double roll, SunLight sun) {
+        buildModelMatrix(x, y, z, heading, pitch, roll);
+
+        // The box has to hold the boat *and* the shadow it throws, and how far that
+        // reaches depends entirely on how low the sun is: a rig 19 m tall lays its
+        // shadow 37 m away at a 26 degree sun and twice that an hour later. Sizing
+        // the box for the boat alone - which is the obvious thing to do - cuts the
+        // shadow off in a straight line across the sea a few lengths to leeward.
+        float elevation = Math.max(0.12f, sun.direction().y);
+        float reach = RIG_HEIGHT * (float) Math.sqrt(1f - elevation * elevation) / elevation;
+        float extent = Math.min(SHADOW_MAXIMUM_EXTENT,
+                Math.max(SHADOW_MINIMUM_EXTENT, reach * 0.5f + 14f));
+
+        // Centred half way along the shadow rather than on the boat, so the box is
+        // spent on where the shadow actually is.
+        float alongX = -sun.direction().x;
+        float alongZ = -sun.direction().z;
+        float alongLength = (float) Math.hypot(alongX, alongZ);
+        if (alongLength > 1e-4f) {
+            alongX /= alongLength;
+            alongZ /= alongLength;
+        }
+        float offset = Math.min(reach, SHADOW_MAXIMUM_EXTENT) * 0.5f;
+        lightTarget.set(
+                (float) x + alongX * offset,
+                (float) y + 5f,
+                (float) z + alongZ * offset);
+        lightEye.set(sun.direction()).scl(extent * 2.2f).add(lightTarget);
+
+        // Any up vector will do as long as it is not parallel to the light; with the
+        // sun near the zenith, +Y is.
+        Vector3 up = Math.abs(sun.direction().y) > 0.99f ? Vector3.X : Vector3.Y;
+        Matrix4 view = new Matrix4().setToLookAt(lightEye, lightTarget, up);
+        Matrix4 projection = new Matrix4().setToOrtho(
+                -extent, extent, -extent, extent, 0.1f, extent * 5f);
+        lightViewProjection.set(projection).mul(view);
+
+        shadowMap.begin();
+        Gdx.gl.glViewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
+        // Cleared to 1, which reads as "nothing between here and the sun".
+        Gdx.gl.glClearColor(1f, 1f, 1f, 1f);
+        Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT | GL20.GL_DEPTH_BUFFER_BIT);
+        Gdx.gl.glEnable(GL20.GL_DEPTH_TEST);
+        Gdx.gl.glDepthMask(true);
+        Gdx.gl.glDisable(GL20.GL_BLEND);
+        Gdx.gl.glDisable(GL20.GL_CULL_FACE);
+
+        shadowProgram.bind();
+        shadowProgram.setUniformMatrix("u_lightViewProjection", lightViewProjection);
+        shadowProgram.setUniformMatrix("u_model", model);
+        hull.render(shadowProgram, GL20.GL_TRIANGLES);
+        sails.render(shadowProgram, GL20.GL_TRIANGLES);
+        shadowMap.end();
+    }
+
+    /** Binds the shadow map and its matrix on a program that includes lib_shadow. */
+    public void bindShadow(ShaderProgram target, int textureUnit, float strength) {
+        shadowMap.texture().bind(textureUnit);
+        target.setUniformi("u_shadowMap", textureUnit);
+        target.setUniformMatrix("u_lightViewProjection", lightViewProjection);
+        target.setUniformf("u_shadowTexel", shadowTexel());
+        target.setUniformf("u_shadowStrength", strength);
     }
 
     /**
@@ -91,8 +228,17 @@ public final class BoatRenderer implements Disposable {
     /** Draws the boat where the sailing model says it is. */
     public void render(Camera camera, SailingBoat boat, SunLight sun, float turbidity) {
         sheetFor(boat.wind().angle);
+        this.speed = (float) boat.speed();
         render(camera, boat.x(), boat.heave(), boat.z(),
                 boat.heading(), boat.pitch(), boat.roll(), sun, turbidity);
+    }
+
+    /**
+     * Sets speed through the water, m/s, which drives the bow wave and the wet band
+     * along the topsides. A boat lying still throws neither.
+     */
+    public void setSpeed(double metresPerSecond) {
+        this.speed = (float) metresPerSecond;
     }
 
     /**
@@ -126,6 +272,9 @@ public final class BoatRenderer implements Disposable {
                 sun.direction().x, sun.direction().y, sun.direction().z);
         program.setUniformf("u_sunColour", sun.red(), sun.green(), sun.blue());
         program.setUniformf("u_turbidity", turbidity);
+        program.setUniformf("u_waterLevel", (float) y);
+        program.setUniformf("u_boatSpeed", speed);
+        bindShadow(program, 0, SHADOW_STRENGTH);
 
         hull.render(program, GL20.GL_TRIANGLES);
         sails.render(program, GL20.GL_TRIANGLES);
@@ -187,11 +336,12 @@ public final class BoatRenderer implements Disposable {
         Mesh mesh = new Mesh(true, vertexCount, source.indices.length,
                 new VertexAttribute(VertexAttributes.Usage.Position, 3, "a_position"),
                 new VertexAttribute(VertexAttributes.Usage.Normal, 3, "a_normal"),
-                new VertexAttribute(VertexAttributes.Usage.Generic, 1, "a_material"));
+                new VertexAttribute(VertexAttributes.Usage.Generic, 1, "a_material"),
+                new VertexAttribute(VertexAttributes.Usage.TextureCoordinates, 2, "a_uv"));
 
-        float[] interleaved = new float[vertexCount * 7];
+        float[] interleaved = new float[vertexCount * 9];
         for (int v = 0; v < vertexCount; v++) {
-            int out = v * 7;
+            int out = v * 9;
             interleaved[out] = source.positions[v * 3];
             interleaved[out + 1] = source.positions[v * 3 + 1];
             interleaved[out + 2] = source.positions[v * 3 + 2];
@@ -199,11 +349,13 @@ public final class BoatRenderer implements Disposable {
             interleaved[out + 4] = source.normals[v * 3 + 1];
             interleaved[out + 5] = source.normals[v * 3 + 2];
             interleaved[out + 6] = source.materials[v];
+            interleaved[out + 7] = source.uvs[v * 2];
+            interleaved[out + 8] = source.uvs[v * 2 + 1];
         }
         mesh.setVertices(interleaved);
 
-        // libGDX indices are shorts. The boat is a few hundred triangles, so this is
-        // never close, but a silent wrap would draw garbage rather than fail.
+        // libGDX indices are shorts. A silent wrap would draw garbage rather than
+        // fail, and a detailed hull is no longer obviously under the limit.
         if (vertexCount > Short.MAX_VALUE) {
             mesh.dispose();
             throw new IllegalStateException(
@@ -220,6 +372,8 @@ public final class BoatRenderer implements Disposable {
     @Override
     public void dispose() {
         program.dispose();
+        shadowProgram.dispose();
+        shadowMap.dispose();
         hull.dispose();
         sails.dispose();
     }

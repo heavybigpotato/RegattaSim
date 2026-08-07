@@ -1,24 +1,221 @@
-// A 40 ft racing hull, generated rather than modelled.
+// The boat's geometry.
 //
-// There is no glTF loader here on purpose: the asset pipeline is Phase 6 work and
-// this needs a boat now. A hull is a loft between stations, which is how they are
-// actually drawn, so generating one is a few lines of curve evaluation and gives
-// something that reads correctly from every angle without shipping a single byte
-// of geometry.
+// Split in two, deliberately.
 //
-// Boat-local axes match the physics: +X is the bow, +Z is port, +Y is up. That
-// last one follows from starboard being 90 degrees clockwise from the bow, which
-// is what SailingBoat samples for roll.
+// The **hull** - shell, deck, coachroof, cockpit, appendages, standing rig and
+// deck gear - is baked by `./gradlew :core:generateWebBoat` into boat-hull.js from
+// HullLoft in `core`. It is six hundred lines of curve evaluation and it is
+// entirely static, so transliterating it here would be six hundred lines of
+// duplicated geometry kept in step by a checksum: all the cost of a second
+// implementation and none of the benefit, because unlike the physics there is
+// nothing in a hull's vertices that a server needs to reason about on its own.
+//
+// The **sails** are built here, because they move: they swing with the sheet and
+// take a different draft and twist on each point of sail, so the browser has to be
+// able to loft them itself. That code is a transliteration of HullLoft.sails, and
+// tools/web-parity-check.js evaluates both and compares them so they cannot drift.
+//
+// Boat-local axes match the physics: +X is the bow, +Z is port, +Y is up. That last
+// one follows from starboard being 90 degrees clockwise from the bow, which is what
+// SailingBoat samples for roll.
 
-const MATERIAL = { HULL: 0, DECK: 1, RIG: 2, SAIL: 3 };
+import { HULL_MESH } from './boat-hull.js';
+
+export const MATERIAL = {
+  TOPSIDES: 0, DECK: 1, SPAR: 2, SAIL: 3, BOTTOM: 4, WIRE: 5, WINDOW: 6,
+};
+
+/** Rig dimensions, mirroring the fields HullLoft exposes. */
+export const RIG = {
+  length: 12.18,
+  mastX: 12.18 * 0.12,
+  mastHeight: 18.5,
+  get mastBase() { return sheer(0.5 - this.mastX / this.length) - 0.1; },
+  get boomEnd() { return this.mastX - 5.2; },
+  get stemX() { return this.length * 0.62; },
+  get stemY() { return sheer(0.0) - 0.55; },
+  get houndsY() { return this.mastHeight * 0.86; },
+};
+
+/**
+ * Deck height above the waterline. Only the rig needs it here - the hull's own
+ * copy of this curve lives in HullLoft and is baked into the mesh.
+ */
+function sheer(t) {
+  return 1.14 + 0.72 * Math.pow(1 - t, 1.8) + 0.10 * t * t;
+}
+
+/** The baked hull, ready to upload. */
+export function buildHull() {
+  return HULL_MESH;
+}
+
+// --- mesh building ----------------------------------------------------------
+
+/**
+ * Smallest cross-product length a triangle may have and still be built. Twice the
+ * area, so this is a face of half a square millimetre - real faces here are
+ * thousands of times larger and the ones this rejects are millions of times
+ * smaller, so nothing sits near the line.
+ *
+ * The test cannot be for exactly zero. Both sail heads taper to a point, and the
+ * luff and the leech arrive there by different arithmetic, so the two "same"
+ * vertices differ in the last bits of a double: not exactly degenerate, and far too
+ * close for a cross product to have a direction. Java and JavaScript disagreed
+ * about which way one such face pointed by 9 degrees, which is what found this.
+ */
+const MINIMUM_FACE = 1e-9;
+
+/** Position quantum for deciding two vertices are the same point, metres. */
+const WELD = 1e-4;
+
+/** A point on a surface: position and the surface coordinate at it. */
+export const at = (x, y, z, u = 0, v = 0) => [x, y, z, u, v];
+
+/**
+ * Accumulates triangles and resolves their normals, matching BoatMesh.Builder.
+ *
+ * Normals are averaged across faces that share a position *and* a smoothing group,
+ * so every edge is hard or soft according to what it actually is: a sail is one
+ * smooth surface, and the boom beside it is not part of it.
+ */
+export class MeshBuilder {
+  constructor() {
+    this.positions = [];
+    this.normals = [];
+    this.materials = [];
+    this.uvs = [];
+    this.groups = [];
+    this.indices = [];
+    this.currentMaterial = MATERIAL.TOPSIDES;
+    this.currentGroup = 0;
+  }
+
+  material(material) {
+    this.currentMaterial = material;
+    return this;
+  }
+
+  smoothing(group) {
+    this.currentGroup = group;
+    return this;
+  }
+
+  triangle(a, b, c) {
+    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+    const vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+    const nx = uy * vz - uz * vy;
+    const ny = uz * vx - ux * vz;
+    const nz = ux * vy - uy * vx;
+    if (Math.sqrt(nx * nx + ny * ny + nz * nz) < MINIMUM_FACE) return;
+    // Left unnormalised on purpose. Averaging by the raw cross product weights each
+    // face by its area, which is what stops a fan of slivers at a masthead from
+    // outvoting the large panels around it.
+    this.indices.push(this.vertex(a, nx, ny, nz));
+    this.indices.push(this.vertex(b, nx, ny, nz));
+    this.indices.push(this.vertex(c, nx, ny, nz));
+  }
+
+  quad(a, b, c, d) {
+    this.triangle(a, b, c);
+    this.triangle(a, c, d);
+  }
+
+  vertex(p, nx, ny, nz) {
+    this.positions.push(p[0], p[1], p[2]);
+    this.normals.push(nx, ny, nz);
+    this.uvs.push(p[3], p[4]);
+    this.materials.push(this.currentMaterial);
+    this.groups.push(this.currentGroup);
+    return this.materials.length - 1;
+  }
+
+  /**
+   * Averages face normals per smoothing group, then collapses vertices that are
+   * genuinely identical and remaps the indices onto them.
+   */
+  build() {
+    const count = this.materials.length;
+    const q = (v) => Math.round(v / WELD);
+
+    const sums = new Map();
+    const keys = new Array(count);
+    for (let v = 0; v < count; v++) {
+      const key = `${q(this.positions[v * 3])},${q(this.positions[v * 3 + 1])},`
+        + `${q(this.positions[v * 3 + 2])},${this.groups[v]}`;
+      keys[v] = key;
+      let sum = sums.get(key);
+      if (!sum) sums.set(key, (sum = [0, 0, 0]));
+      sum[0] += this.normals[v * 3];
+      sum[1] += this.normals[v * 3 + 1];
+      sum[2] += this.normals[v * 3 + 2];
+    }
+
+    const positions = [];
+    const normals = [];
+    const materials = [];
+    const uvs = [];
+    const unique = new Map();
+    const remap = new Int32Array(count);
+
+    for (let v = 0; v < count; v++) {
+      const sum = sums.get(keys[v]);
+      let x = sum[0], y = sum[1], z = sum[2];
+      let length = Math.sqrt(x * x + y * y + z * z);
+      if (length < 1e-12) {
+        // Two faces of a zero-thickness fin exactly cancelling. Fall back to this
+        // vertex's own face normal, which still has a direction.
+        x = this.normals[v * 3];
+        y = this.normals[v * 3 + 1];
+        z = this.normals[v * 3 + 2];
+        length = Math.sqrt(x * x + y * y + z * z);
+      }
+      // Rounded to float32 before deduplication, so the key matches what is uploaded
+      // and two vertices that differ only below float precision become one.
+      const nx = Math.fround(x / length);
+      const ny = Math.fround(y / length);
+      const nz = Math.fround(z / length);
+      const px = Math.fround(this.positions[v * 3]);
+      const py = Math.fround(this.positions[v * 3 + 1]);
+      const pz = Math.fround(this.positions[v * 3 + 2]);
+      const u = Math.fround(this.uvs[v * 2]);
+      const w = Math.fround(this.uvs[v * 2 + 1]);
+      const m = this.materials[v];
+
+      const key = `${px},${py},${pz},${nx},${ny},${nz},${m},${u},${w}`;
+      const existing = unique.get(key);
+      if (existing !== undefined) {
+        remap[v] = existing;
+        continue;
+      }
+      const index = materials.length;
+      positions.push(px, py, pz);
+      normals.push(nx, ny, nz);
+      uvs.push(u, w);
+      materials.push(m);
+      unique.set(key, index);
+      remap[v] = index;
+    }
+
+    const indices = new Uint32Array(this.indices.length);
+    for (let i = 0; i < this.indices.length; i++) indices[i] = remap[this.indices[i]];
+
+    return {
+      positions: new Float32Array(positions),
+      normals: new Float32Array(normals),
+      materials: new Float32Array(materials),
+      uvs: new Float32Array(uvs),
+      indices,
+    };
+  }
+}
 
 /**
  * A stable summary of a mesh, matching BoatMesh.checksum in `core`.
  *
  * Summing coordinates plainly would let a sign error cancel itself out, so each is
  * weighted by where it sits in the buffer: moving a vertex, flipping a winding or
- * dropping a face all change the total. tools/web-parity-check.js compares this
- * against the Java, so the two boats cannot quietly become different boats.
+ * dropping a face all change the total.
  */
 export function meshChecksum(mesh) {
   let sum = 0;
@@ -29,435 +226,163 @@ export function meshChecksum(mesh) {
 }
 
 /**
- * How much higher the deck is on the centreline than at the sheer, metres.
+ * A square-section bar between two points, for spars and rigging.
  *
- * Every boat's deck is arched. It sheds water, it is stiffer than a flat plate
- * for the same weight, and - the reason it is here - a flat deck at maximum beam
- * renders as one large parallelogram that reads as a raft with a mast on it. The
- * crown is what tells the eye the deck is a surface rather than a lid.
+ * Four sides rather than a cylinder: at the width these are drawn, the extra faces
+ * of a round section are below a pixel.
  */
-const DECK_CROWN = 0.18;
+export function bar(mesh, from, to, radius) {
+  let dx = to[0] - from[0];
+  let dy = to[1] - from[1];
+  let dz = to[2] - from[2];
+  const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  if (len < 1e-6) return;
+  dx /= len;
+  dy /= len;
+  dz /= len;
 
-/**
- * Half-beam at a station, 0 at the bow and nearly full at the transom.
- *
- * A Class40 carries its beam a long way aft - maximum around two thirds back,
- * and a transom still at nine tenths of it - which is what lets the boat plane.
- * A cruising hull would taper to a fine stern instead, and the difference is
- * most of what makes these two types recognisable from astern.
- */
-function beamShape(t) {
-  // Smooth all the way, deliberately. An earlier version clamped the forward
-  // curve at the point of maximum beam and tapered aft of it, which is easy to
-  // read but leaves a slope discontinuity there - and a flat-shaded hull renders
-  // that as a hard crease running right down the topsides.
-  return Math.sin(Math.PI * 0.5 * Math.pow(t, 0.8)) * (1 - 0.1 * Math.pow(t, 2.5));
-}
+  // Any two directions perpendicular to the bar will do; pick the one least
+  // parallel to it so the cross product never collapses.
+  const helper = Math.abs(dy) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+  let ax = dy * helper[2] - dz * helper[1];
+  let ay = dz * helper[0] - dx * helper[2];
+  let az = dx * helper[1] - dy * helper[0];
+  const al = Math.sqrt(ax * ax + ay * ay + az * az);
+  ax /= al;
+  ay /= al;
+  az /= al;
+  const bx = dy * az - dz * ay;
+  const by = dz * ax - dx * az;
+  const bz = dx * ay - dy * ax;
 
-/**
- * Scales `beamShape` so the widest station is exactly the beam asked for.
- *
- * Without this the shape function peaks below 1 - it did, at 0.916 - and the drawn
- * boat came out 8% narrower than the hull the physics was sampling for roll.
- * Computed from the same discrete stations the loft uses, so the maximum is the one
- * that actually gets built rather than the curve's analytic peak.
- */
-function beamScale(stations) {
-  let widest = 0;
-  for (let i = 0; i <= stations; i++) widest = Math.max(widest, beamShape(i / stations));
-  return 1 / widest;
-}
-
-/**
- * Deck height above the waterline: high at the bow, lowest amidships.
- *
- * These are real freeboards - about 1.85 m at the stem, 1.35 amidships, 1.25 at
- * the transom - and they matter more than they look. The first version of this
- * function gave the boat 0.7 m of topsides, which is a dinghy's, and in a four
- * metre sea the deck was under water in every frame: the hull simply could not
- * be seen. A boat's freeboard is what keeps the sea out, and getting it wrong is
- * visible immediately.
- */
-function sheer(t) {
-  return 1.14 + 0.72 * Math.pow(1 - t, 1.8) + 0.10 * t * t;
-}
-
-/**
- * Canoe body depth below the waterline: zero at the stem, deepest by a third of
- * the way aft, and still immersed at the transom.
- *
- * The transom is the point. Returning to zero depth aft - which a single sine
- * over the length does - draws a boat whose stern comes to a knife edge at the
- * waterline, and no modern racing hull is shaped that way; they carry their
- * sections aft to a wide, shallow, immersed transom.
- */
-function keelDepth(t) {
-  return -0.93 * (1 - Math.exp(-t / 0.22)) * (1 - 0.42 * t);
-}
-
-function push(arrays, x, y, z, nx, ny, nz, material) {
-  arrays.positions.push(x, y, z);
-  arrays.normals.push(nx, ny, nz);
-  arrays.materials.push(material);
-  return arrays.positions.length / 3 - 1;
-}
-
-/**
- * Smallest cross-product length a triangle may have and still be built. Twice the
- * area, so this is a face of half a square millimetre - real faces here are
- * thousands of times larger and the ones this rejects are millions of times
- * smaller, so nothing sits near the line. Matches BoatMesh.Builder in `core`.
- */
-const MINIMUM_FACE = 1e-9;
-
-/**
- * Adds a flat-shaded triangle. Flat shading suits a hard-chined racing hull.
- *
- * Degenerate faces are dropped rather than emitted with a meaningless normal, and
- * they do occur: the bow station collapses the keel, chine and deck edge onto one
- * point, and both sail heads taper to a point where the luff and the leech arrive
- * by different arithmetic - so the two "same" vertices differ in the last bits of
- * a double, and the face is not exactly degenerate. `normalize` of a near-zero
- * vector is undefined in GLSL, and Java and JavaScript disagreed about which way
- * one such face pointed by 9 degrees, which is what found this.
- */
-function triangle(arrays, a, b, c, material) {
-  const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
-  const vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
-  let nx = uy * vz - uz * vy;
-  let ny = uz * vx - ux * vz;
-  let nz = ux * vy - uy * vx;
-  const length = Math.sqrt(nx * nx + ny * ny + nz * nz);
-  if (length < MINIMUM_FACE) return;
-  nx /= length;
-  ny /= length;
-  nz /= length;
-
-  const i0 = push(arrays, a[0], a[1], a[2], nx, ny, nz, material);
-  const i1 = push(arrays, b[0], b[1], b[2], nx, ny, nz, material);
-  const i2 = push(arrays, c[0], c[1], c[2], nx, ny, nz, material);
-  arrays.indices.push(i0, i1, i2);
-}
-
-function quad(arrays, a, b, c, d, material) {
-  triangle(arrays, a, b, c, material);
-  triangle(arrays, a, c, d, material);
-}
-
-/**
- * Builds the boat.
- *
- * @param length overall length, metres
- * @param beam   maximum beam, metres
- */
-export function buildHull(length = 12.18, beam = 4.5) {
-  const arrays = { positions: [], normals: [], materials: [], indices: [] };
-  const halfBeam = beam * 0.5;
-  const stations = 22;
-  const scale = beamScale(stations);
-  const halfWidth = (t) => halfBeam * beamShape(t) * scale;
-
-  // Station 0 is the bow, station `stations` the transom. x runs from +L/2 to
-  // -L/2 so the bow sits forward of the origin.
-  //
-  // Each station carries four points, not two: centreline, chine, deck edge -
-  // because a hard chine is the defining line of this type. A section lofted
-  // straight from the keel to the sheer draws a V, and a V seen from astern is a
-  // pyramid rather than a boat.
-  const station = (i) => {
-    const t = i / stations;
-    const hw = halfWidth(t);
-    const keel = keelDepth(t);
-    return {
-      x: length * (0.5 - t),
-      hw,
-      deck: sheer(t),
-      keel,
-      // The turn of the bilge: well outboard and just under the waterline, so
-      // the bottom is nearly flat and the topsides nearly upright.
-      chineZ: hw * 0.86,
-      chineY: keel * 0.2,
-    };
-  };
-
-  /** Deck height at a distance `z` from the centreline, following the crown. */
-  const deckAt = (s, z) => {
-    const across = s.hw > 1e-6 ? z / s.hw : 0;
-    return s.deck + DECK_CROWN * (1 - across * across);
-  };
-
-  for (let i = 0; i < stations; i++) {
-    const a = station(i);
-    const b = station(i + 1);
-
-    // Starboard is -Z, so its panels are wound bow-to-stern along the lower edge;
-    // port repeats them the other way round, which flips the normals outboard.
-    for (const side of [-1, 1]) {
-      const lower = side < 0
-        ? [[a.x, a.keel, 0], [b.x, b.keel, 0], [b.x, b.chineY, side * b.chineZ],
-           [a.x, a.chineY, side * a.chineZ]]
-        : [[a.x, a.chineY, side * a.chineZ], [b.x, b.chineY, side * b.chineZ],
-           [b.x, b.keel, 0], [a.x, a.keel, 0]];
-      const upper = side < 0
-        ? [[a.x, a.chineY, side * a.chineZ], [b.x, b.chineY, side * b.chineZ],
-           [b.x, b.deck, side * b.hw], [a.x, a.deck, side * a.hw]]
-        : [[a.x, a.deck, side * a.hw], [b.x, b.deck, side * b.hw],
-           [b.x, b.chineY, side * b.chineZ], [a.x, a.chineY, side * a.chineZ]];
-      quad(arrays, lower[0], lower[1], lower[2], lower[3], MATERIAL.HULL);
-      quad(arrays, upper[0], upper[1], upper[2], upper[3], MATERIAL.HULL);
-    }
-
-    // Deck, in two halves so the crown has a ridge to run along.
-    quad(arrays,
-      [a.x, deckAt(a, 0), 0], [a.x, a.deck, -a.hw],
-      [b.x, b.deck, -b.hw], [b.x, deckAt(b, 0), 0], MATERIAL.DECK);
-    quad(arrays,
-      [a.x, deckAt(a, 0), 0], [b.x, deckAt(b, 0), 0],
-      [b.x, b.deck, b.hw], [a.x, a.deck, a.hw], MATERIAL.DECK);
+  for (let k = 0; k < 4; k++) {
+    const a0 = (k * Math.PI) / 2;
+    const a1 = ((k + 1) * Math.PI) / 2;
+    const c0 = Math.cos(a0) * radius;
+    const s0 = Math.sin(a0) * radius;
+    const c1 = Math.cos(a1) * radius;
+    const s1 = Math.sin(a1) * radius;
+    mesh.quad(
+      at(from[0] + ax * c0 + bx * s0, from[1] + ay * c0 + by * s0,
+        from[2] + az * c0 + bz * s0, 0, a0),
+      at(to[0] + ax * c0 + bx * s0, to[1] + ay * c0 + by * s0,
+        to[2] + az * c0 + bz * s0, len, a0),
+      at(to[0] + ax * c1 + bx * s1, to[1] + ay * c1 + by * s1,
+        to[2] + az * c1 + bz * s1, len, a1),
+      at(from[0] + ax * c1 + bx * s1, from[1] + ay * c1 + by * s1,
+        from[2] + az * c1 + bz * s1, 0, a1));
   }
-
-  // Transom: a flat plate closing the stern, which on this type is nearly the
-  // full beam and is a large part of how the boat reads from astern. Wound to
-  // face aft, along -X.
-  const stern = station(stations);
-  const keelPoint = [stern.x, stern.keel, 0];
-  const chineStarboard = [stern.x, stern.chineY, -stern.chineZ];
-  const chinePort = [stern.x, stern.chineY, stern.chineZ];
-  const deckStarboard = [stern.x, stern.deck, -stern.hw];
-  const deckPort = [stern.x, stern.deck, stern.hw];
-  const crown = [stern.x, deckAt(stern, 0), 0];
-  // Split down the centreline so the top edge follows the deck's crown; the two
-  // halves share the keel-to-crown line and together close the whole outline.
-  quad(arrays, chinePort, deckPort, crown, keelPoint, MATERIAL.HULL);
-  quad(arrays, keelPoint, crown, deckStarboard, chineStarboard, MATERIAL.HULL);
-
-  // --- coachroof ------------------------------------------------------------
-  // A bare deck plate reads as a barge from any angle. A low trunk is what
-  // breaks the plane, and it is also the thing the eye measures the sheerline
-  // against - without it there is nothing in the middle of the boat to judge
-  // the curve of the deck edge by.
-  const roofFirst = Math.round(stations * 0.28);
-  const roofLast = Math.round(stations * 0.74);
-  const roof = (i) => {
-    const s = station(i);
-    const f = (i - roofFirst) / (roofLast - roofFirst);
-    const hw = s.hw * (0.52 + 0.13 * f);
-    // Seated on the crowned deck at its own half-width, or it would float clear
-    // of the deck on one side and sink into it on the other.
-    const base = deckAt(s, hw);
-    return {
-      x: s.x,
-      hw,
-      base,
-      // Wedge-shaped, low at the forward end and highest at the companionway,
-      // which is where the crew needs the headroom.
-      top: base + 0.16 + 0.42 * f,
-    };
-  };
-
-  for (let i = roofFirst; i < roofLast; i++) {
-    const a = roof(i);
-    const b = roof(i + 1);
-    // Starboard side, then port wound the other way, same as the topsides.
-    quad(arrays,
-      [a.x, a.base, -a.hw], [b.x, b.base, -b.hw],
-      [b.x, b.top, -b.hw], [a.x, a.top, -a.hw], MATERIAL.DECK);
-    quad(arrays,
-      [a.x, a.top, a.hw], [b.x, b.top, b.hw],
-      [b.x, b.base, b.hw], [a.x, a.base, a.hw], MATERIAL.DECK);
-    quad(arrays,
-      [a.x, a.top, a.hw], [a.x, a.top, -a.hw],
-      [b.x, b.top, -b.hw], [b.x, b.top, b.hw], MATERIAL.DECK);
-  }
-
-  const roofFront = roof(roofFirst);
-  const roofBack = roof(roofLast);
-  quad(arrays,
-    [roofFront.x, roofFront.base, roofFront.hw], [roofFront.x, roofFront.top, roofFront.hw],
-    [roofFront.x, roofFront.top, -roofFront.hw], [roofFront.x, roofFront.base, -roofFront.hw],
-    MATERIAL.DECK);
-  // The aft face is the companionway bulkhead, so it faces the cockpit.
-  quad(arrays,
-    [roofBack.x, roofBack.base, -roofBack.hw], [roofBack.x, roofBack.top, -roofBack.hw],
-    [roofBack.x, roofBack.top, roofBack.hw], [roofBack.x, roofBack.base, roofBack.hw],
-    MATERIAL.RIG);
-
-  // --- keel and rudder ------------------------------------------------------
-  const finTop = -0.5;
-  const finBottom = -3.0;
-  const finX = -0.3;
-  const finChord = 0.75;
-  quad(arrays,
-    [finX + finChord, finTop, 0.06], [finX - finChord, finTop, 0.06],
-    [finX - finChord * 0.45, finBottom, 0.06], [finX + finChord * 0.45, finBottom, 0.06],
-    MATERIAL.RIG);
-  quad(arrays,
-    [finX - finChord, finTop, -0.06], [finX + finChord, finTop, -0.06],
-    [finX + finChord * 0.45, finBottom, -0.06], [finX - finChord * 0.45, finBottom, -0.06],
-    MATERIAL.RIG);
-
-  const rudderX = -length * 0.44;
-  quad(arrays,
-    [rudderX + 0.35, -0.4, 0.04], [rudderX - 0.35, -0.4, 0.04],
-    [rudderX - 0.25, -2.1, 0.04], [rudderX + 0.25, -2.1, 0.04], MATERIAL.RIG);
-  quad(arrays,
-    [rudderX - 0.35, -0.4, -0.04], [rudderX + 0.35, -0.4, -0.04],
-    [rudderX + 0.25, -2.1, -0.04], [rudderX - 0.25, -2.1, -0.04], MATERIAL.RIG);
-
-  // --- rig ------------------------------------------------------------------
-  const mastX = length * 0.12;
-  const mastHeight = 18.5;
-  const mastBase = sheer(0.5 - mastX / length) - 0.1;
-  const mastRadius = 0.14;
-  const sides = 6;
-  for (let s = 0; s < sides; s++) {
-    const a0 = (s / sides) * Math.PI * 2;
-    const a1 = ((s + 1) / sides) * Math.PI * 2;
-    // Tapered: a spar is thinner at the head than at the partners.
-    quad(arrays,
-      [mastX + Math.cos(a0) * mastRadius, mastBase, mastX * 0 + Math.sin(a0) * mastRadius],
-      [mastX + Math.cos(a1) * mastRadius, mastBase, Math.sin(a1) * mastRadius],
-      [mastX + Math.cos(a1) * mastRadius * 0.4, mastHeight, Math.sin(a1) * mastRadius * 0.4],
-      [mastX + Math.cos(a0) * mastRadius * 0.4, mastHeight, Math.sin(a0) * mastRadius * 0.4],
-      MATERIAL.RIG);
-  }
-
-  // The boom is not built here. It swings with the sheet, so it belongs with the
-  // sails, which are rebuilt when the trim changes - left in the hull mesh it sat
-  // on the centreline while the mainsail swung away from it.
-  const boomEnd = mastX - 5.2;
-
-  // Forestay, from the stemhead to the hounds. It is one thin quad and it earns
-  // its place: it is the line the headsail's luff sits on, and without it the jib
-  // looks like it is hanging in mid air.
-  const stemX = length * 0.47;
-  const stemY = sheer(0.5 - stemX / length);
-  const houndsY = mastHeight * 0.86;
-  quad(arrays,
-    [stemX, stemY, 0.035], [mastX, houndsY, 0.035],
-    [mastX, houndsY, -0.035], [stemX, stemY, -0.035], MATERIAL.RIG);
-
-  return {
-    positions: new Float32Array(arrays.positions),
-    normals: new Float32Array(arrays.normals),
-    materials: new Float32Array(arrays.materials),
-    indices: new Uint32Array(arrays.indices),
-    mastX,
-    mastBase,
-    mastHeight,
-    boomEnd,
-    stemX,
-    stemY,
-    houndsY,
-  };
 }
 
-const SAIL_ROWS = 10;
-const SAIL_COLS = 8;
+// --- sails ------------------------------------------------------------------
+
+const SAIL_ROWS = 18;
+const SAIL_COLS = 14;
+
+// Smoothing groups, matching the constants in HullLoft.
+const G_BOOM = 10;
+const G_SAIL_MAIN = 13;
+const G_SAIL_JIB = 14;
 
 /**
- * Lofts a cambered sail into `arrays`.
+ * Lofts a cambered sail.
  *
- * A sail is a surface between two edges - the luff, which is fixed to a spar or a
- * stay, and the leech, which is not - so it is described by where those two edges
- * run and how deep the section between them is. The camber is a circular arc,
- * deepest around a third of the way aft, which is where a sail's draft actually
- * sits.
+ * A sail is a surface between two edges - the luff, fixed to a spar or a stay, and
+ * the leech, which is not - so it is described by where those two run and how deep
+ * the section between them is. The camber is a circular arc, deepest around a third
+ * of the way aft, which is where a sail's draft sits.
  *
- * @param luff  (u=0) edge as a function of height fraction, returning [x, y]
- * @param leech (u=1) edge as a function of height fraction, returning [x, y]
- * @param angle rotation from the centreline, radians, positive to port
- * @param draft maximum camber as a fraction of chord
+ * Twist is what makes it a sail rather than a wing: the head is always eased
+ * relative to the foot, because the apparent wind aloft is freer. A sail without it
+ * looks like sheet metal.
  */
-function loftSail(arrays, luff, leech, angle, draft) {
-  const point = (u, v) => {
-    const [luffX, luffY] = luff(v);
-    const [leechX, leechY] = leech(v);
-    const chord = luffX - leechX;
-    const along = u * chord;
-    const camber = draft * chord * Math.sin(Math.PI * Math.pow(u, 0.8));
-    return [
-      luffX - along * Math.cos(angle) + camber * Math.sin(angle),
-      luffY + (leechY - luffY) * u,
-      along * Math.sin(angle) + camber * Math.cos(angle),
-    ];
-  };
-
+function loftSail(mesh, luff, leech, angle, draft, twist) {
   for (let r = 0; r < SAIL_ROWS; r++) {
     for (let c = 0; c < SAIL_COLS; c++) {
       const v0 = r / SAIL_ROWS;
       const v1 = (r + 1) / SAIL_ROWS;
       const u0 = c / SAIL_COLS;
       const u1 = (c + 1) / SAIL_COLS;
-      quad(arrays, point(u0, v0), point(u1, v0), point(u1, v1), point(u0, v1), MATERIAL.SAIL);
+      mesh.quad(
+        sailPoint(luff, leech, u0, v0, angle, draft, twist),
+        sailPoint(luff, leech, u1, v0, angle, draft, twist),
+        sailPoint(luff, leech, u1, v1, angle, draft, twist),
+        sailPoint(luff, leech, u0, v1, angle, draft, twist));
     }
   }
 }
 
+function sailPoint(luff, leech, u, v, angle, draft, twist) {
+  const l = luff(v);
+  const t = leech(v);
+  const chord = l[0] - t[0];
+  const along = u * chord;
+  // Draft moves aft and shallows as it climbs, which is what a trimmed sail does
+  // and what makes the leech fall open at the head.
+  const depth = draft * (1 - 0.35 * v);
+  const camber = depth * chord * Math.sin(Math.PI * Math.pow(u, 0.8 + 0.25 * v));
+  const swing = angle * (1 + twist * v);
+  const cos = Math.cos(swing);
+  const sin = Math.sin(swing);
+  return at(
+    l[0] - along * cos + camber * sin,
+    l[1] + (t[1] - l[1]) * u,
+    along * sin + camber * cos,
+    along, v);
+}
+
 /**
- * Builds the sail plan - mainsail and headsail - as one mesh, rebuilt when the
- * trim changes.
+ * Builds the sail plan - mainsail, headsail and boom - as one mesh, rebuilt when
+ * the trim changes.
  *
- * The sails are generated separately from the hull because they move: they swing
- * with the sheets, take a different draft on each point of sail, and will need to
- * flog when they are let out too far.
- *
- * Both sails are drawn because a sloop under main alone does not read as a
- * sailing boat - the whole shape of the rig is the two overlapping triangles, and
- * a boat close-hauled with a bare foretriangle looks like it has lost something.
- * The jib is sheeted inside the main, which is what a jib always is: it works in
- * the main's upwash and stalls if it is eased as far.
+ * Both sails are drawn because a sloop under main alone does not read as a sailing
+ * boat: the shape of the rig *is* the two overlapping triangles. The jib is sheeted
+ * inside the main, which is what a jib always is - it works in the main's upwash
+ * and stalls if it is eased as far.
  *
  * @param sheetAngle boom angle from the centreline, radians, positive to port
  * @param draft      maximum camber as a fraction of chord
  */
 export function buildSails(hull, sheetAngle, draft = 0.11) {
-  const arrays = { positions: [], normals: [], materials: [], indices: [] };
+  const mesh = new MeshBuilder();
+  const rig = RIG;
+  const gooseneck = rig.mastBase + 1.3;
 
-  // Mainsail: luff up the mast from the gooseneck, leech from the boom end to
-  // the head, with roach taken out as it climbs.
-  const gooseneck = hull.mastBase + 1.3;
-  const mainLuff = (v) => [hull.mastX, gooseneck + v * (hull.mastHeight - gooseneck)];
+  mesh.material(MATERIAL.SAIL).smoothing(G_SAIL_MAIN);
+  const mainLuff = (v) => [rig.mastX, gooseneck + v * (rig.mastHeight - gooseneck)];
   const mainLeech = (v) => {
     // A modern main keeps a lot of area high up - the leech falls away far less
     // than a classic triangular sail's, which is the square-top look.
-    const chord = (hull.mastX - hull.boomEnd) * (1 - v * 0.62);
-    return [hull.mastX - chord, gooseneck + v * (hull.mastHeight - gooseneck)];
+    const chord = (rig.mastX - rig.boomEnd) * (1 - v * 0.58 + 0.06 * Math.sin(Math.PI * v));
+    return [rig.mastX - chord, gooseneck + v * (rig.mastHeight - gooseneck)];
   };
-  loftSail(arrays, mainLuff, mainLeech, sheetAngle, draft);
+  loftSail(mesh, mainLuff, mainLeech, sheetAngle, draft, 0.55);
 
-  // Boom, swung to the same angle: a spar from the gooseneck aft along the foot.
-  const boomLength = hull.mastX - hull.boomEnd;
-  const boomPoint = (along, side, lift) => [
-    hull.mastX - along * Math.cos(sheetAngle) - side * Math.sin(sheetAngle),
-    gooseneck - 0.16 + lift,
-    along * Math.sin(sheetAngle) - side * Math.cos(sheetAngle),
-  ];
-  quad(arrays,
-    boomPoint(0, 0.08, 0), boomPoint(boomLength, 0.08, 0.15),
-    boomPoint(boomLength, -0.08, 0.15), boomPoint(0, -0.08, 0), MATERIAL.RIG);
-  quad(arrays,
-    boomPoint(0, -0.08, -0.14), boomPoint(boomLength, -0.08, 0.01),
-    boomPoint(boomLength, 0.08, 0.01), boomPoint(0, 0.08, -0.14), MATERIAL.RIG);
+  mesh.material(MATERIAL.SPAR).smoothing(G_BOOM);
+  const boomLength = rig.mastX - rig.boomEnd;
+  const cos = Math.cos(sheetAngle);
+  const sin = Math.sin(sheetAngle);
+  bar(mesh,
+    at(rig.mastX, gooseneck - 0.13, 0),
+    at(rig.mastX - boomLength * cos, gooseneck - 0.02, boomLength * sin), 0.075);
+  // Vang, from the boom down to the mast heel.
+  bar(mesh,
+    at(rig.mastX - boomLength * 0.22 * cos, gooseneck - 0.16, boomLength * 0.22 * sin),
+    at(rig.mastX, rig.mastBase + 0.15, 0), 0.035);
 
-  // Headsail: luff along the forestay, leech from the clew up to the same head.
+  mesh.material(MATERIAL.SAIL).smoothing(G_SAIL_JIB);
   const jibAngle = sheetAngle * 0.55;
-  const clewX = hull.mastX + 0.9;
-  const clewY = hull.mastBase + 3.6;
+  const clewX = rig.mastX + 0.9;
+  const clewY = rig.mastBase + 3.6;
   const jibLuff = (v) => [
-    hull.stemX + (hull.mastX - hull.stemX) * v,
-    hull.stemY + (hull.houndsY - hull.stemY) * v,
+    rig.stemX + (rig.mastX - rig.stemX) * v,
+    rig.stemY + (rig.houndsY - rig.stemY) * v,
   ];
   const jibLeech = (v) => [
-    clewX + (hull.mastX - clewX) * v,
-    clewY + (hull.houndsY - clewY) * v,
+    clewX + (rig.mastX - clewX) * v,
+    clewY + (rig.houndsY - clewY) * v,
   ];
-  loftSail(arrays, jibLuff, jibLeech, jibAngle, draft * 0.85);
+  loftSail(mesh, jibLuff, jibLeech, jibAngle, draft * 0.85, 0.42);
 
-  return {
-    positions: new Float32Array(arrays.positions),
-    normals: new Float32Array(arrays.normals),
-    materials: new Float32Array(arrays.materials),
-    indices: new Uint32Array(arrays.indices),
-  };
+  return mesh.build();
 }
