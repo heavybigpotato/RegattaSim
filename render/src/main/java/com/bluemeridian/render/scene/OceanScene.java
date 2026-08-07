@@ -165,9 +165,16 @@ public final class OceanScene implements Disposable {
         }
         simulation.update(simulationTime, deltaTime);
 
+        // Shadows first, and outside every other target: the pass binds its own
+        // framebuffer, and both the water and the boat sample the result.
+        if (boat != null) {
+            boatRenderer.renderShadowMap(boat, sun);
+        }
+
         postProcessor.beginScene();
         skyRenderer.render(camera, sun);
-        oceanRenderer.render(camera, simulation, sun, seaState, maximumDisplacement);
+        oceanRenderer.render(camera, simulation, sun, seaState, maximumDisplacement,
+                boat != null ? boatRenderer : null);
         if (boat != null) {
             // After the water, so the hull tests against the depth the sea wrote and
             // anything below the surface is hidden by it.

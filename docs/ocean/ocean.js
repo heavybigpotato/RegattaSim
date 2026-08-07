@@ -51,6 +51,16 @@ function mat4Perspective(fovYRadians, aspect, near, far) {
   return o;
 }
 
+/** Orthographic projection, for the shadow camera. */
+function mat4Ortho(halfExtent, near, far) {
+  const o = mat4Identity();
+  o[0] = 1 / halfExtent;
+  o[5] = 1 / halfExtent;
+  o[10] = -2 / (far - near);
+  o[14] = -(far + near) / (far - near);
+  return o;
+}
+
 function mat4LookAt(eye, dir, up) {
   const f = normalise(dir);
   const s = normalise(cross(f, up));
@@ -95,6 +105,31 @@ function mat4Invert(m) {
  * toward the port quarter, since headings run from +X toward +Z and +Z is port.
  */
 const CHASE_QUARTER = 0.55;
+
+/**
+ * Shadow map resolution, and the half-width of the box it covers in metres.
+ *
+ * One caster, twenty metres tall. At 1024 over a 44 m box that is a texel every
+ * four centimetres, which resolves a shroud; the next size up resolves nothing more
+ * that can be seen and costs four times the fill.
+ */
+const SHADOW_SIZE = 1024;
+/** Smallest box the shadow camera covers, metres. Holds the boat and the rig. */
+const SHADOW_MINIMUM_EXTENT = 22;
+/**
+ * Largest box, metres. The shadow of a rig at sunset is hundreds of metres long and
+ * following it all the way would leave a texel the size of a cockpit; past this the
+ * far end simply is not drawn, which is far less noticeable than blocks.
+ */
+const SHADOW_MAXIMUM_EXTENT = 65;
+/** Height of the rig above the waterline, for sizing the shadow's reach. */
+const RIG_HEIGHT = 19;
+
+/**
+ * How dark a shadow goes. Not 1: a shadow outdoors is never black, it is lit by the
+ * whole sky dome and, on the water, by light scattering in from all around it.
+ */
+const SHADOW_STRENGTH = 0.86;
 
 /**
  * Places the boat: translate to its position, rotate to its heading, then apply
@@ -293,6 +328,8 @@ export class Ocean {
       tonemap: program(gl, 'fullscreen.vert', 'post_tonemap.frag', quadAttributes),
       boat: program(gl, 'boat.vert', 'boat.frag',
         ['a_position', 'a_normal', 'a_material', 'a_uv']),
+      shadow: program(gl, 'shadow_depth.vert', 'shadow_depth.frag',
+        ['a_position', 'a_normal', 'a_material', 'a_uv']),
     };
 
     this.buildQuad();
@@ -370,6 +407,85 @@ export class Ocean {
       sail: this.uploadMesh(buildSails(this.hullGeometry, 0.35)),
     };
     this.sailSheetAngle = 0.35;
+    this.shadowMap = target(gl, SHADOW_SIZE, SHADOW_SIZE, { depth: true });
+    this.lightViewProjection = mat4Identity();
+  }
+
+  /**
+   * Renders the boat into the shadow map from the sun's direction.
+   *
+   * Must run before anything that samples it and outside any other target's
+   * binding. The camera is orthographic and follows the boat, so the map never has
+   * to cover more than one boat's worth of world however far she has sailed.
+   */
+  renderShadowMap(sun) {
+    const gl = this.gl;
+    const b = this.boat;
+    // The box has to hold the boat *and* the shadow it throws, and how far that
+    // reaches depends entirely on how low the sun is: a rig 19 m tall lays its shadow
+    // 37 m away at a 26 degree sun and twice that an hour later. Sizing the box for
+    // the boat alone - the obvious thing to do - cuts the shadow off in a straight
+    // line across the sea a few lengths to leeward.
+    const elevation = Math.max(0.12, sun[1]);
+    const reach = (RIG_HEIGHT * Math.sqrt(1 - elevation * elevation)) / elevation;
+    const extent = Math.min(SHADOW_MAXIMUM_EXTENT,
+      Math.max(SHADOW_MINIMUM_EXTENT, reach * 0.5 + 14));
+
+    // Centred half way along the shadow rather than on the boat, so the box is spent
+    // on where the shadow actually is.
+    const alongLength = Math.hypot(sun[0], sun[2]) || 1;
+    const alongX = -sun[0] / alongLength;
+    const alongZ = -sun[2] / alongLength;
+    const offset = Math.min(reach, SHADOW_MAXIMUM_EXTENT) * 0.5;
+    const target3 = [b.x + alongX * offset, b.heave + 5, b.z + alongZ * offset];
+    const eye = [
+      target3[0] + sun[0] * extent * 2.2,
+      target3[1] + sun[1] * extent * 2.2,
+      target3[2] + sun[2] * extent * 2.2,
+    ];
+    const dir = normalise([
+      target3[0] - eye[0], target3[1] - eye[1], target3[2] - eye[2]]);
+    // Any up vector will do as long as it is not parallel to the light; with the sun
+    // near the zenith, +Y is.
+    const up = Math.abs(dir[1]) > 0.99 ? [1, 0, 0] : [0, 1, 0];
+    const view = mat4LookAt(eye, dir, up);
+    const projection = mat4Ortho(extent, 0.1, extent * 5);
+    this.lightViewProjection = mat4Multiply(projection, view);
+    this.shadowTexelSize = (2 * extent) / SHADOW_SIZE;
+
+    this.bindTarget(this.shadowMap);
+    // Cleared to 1, which reads as "nothing between here and the sun".
+    gl.clearColor(1, 1, 1, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+    gl.depthMask(true);
+    gl.disable(gl.CULL_FACE);
+
+    const p = this.programs.shadow;
+    gl.useProgram(p);
+    gl.uniformMatrix4fv(p.u.u_lightViewProjection, false, this.lightViewProjection);
+    gl.uniformMatrix4fv(p.u.u_model, false, boatModelMatrix(
+      b.x, b.heave, b.z, b.heading, b.pitch, b.roll));
+    for (const mesh of [this.boatMeshes.hull, this.boatMeshes.sail]) {
+      gl.bindVertexArray(mesh.vao);
+      gl.drawElements(gl.TRIANGLES, mesh.count, mesh.type, 0);
+    }
+  }
+
+  /** Binds the shadow map and its matrix on a program that includes lib_shadow. */
+  bindShadow(p, unit, strength) {
+    const gl = this.gl;
+    if (strength > 0) {
+      this.bindTexture(unit, this.shadowMap.tex, p, 'u_shadowMap');
+    } else {
+      // Still has to be bound to something valid even though the lookup returns
+      // before it samples.
+      this.bindTexture(unit, this.cascades[0].displacement.tex, p, 'u_shadowMap');
+    }
+    gl.uniformMatrix4fv(p.u.u_lightViewProjection, false, this.lightViewProjection);
+    gl.uniform1f(p.u.u_shadowTexel, 1 / SHADOW_SIZE);
+    gl.uniform1f(p.u.u_shadowStrength, strength);
   }
 
   uploadMesh(geometry) {
@@ -438,6 +554,7 @@ export class Ocean {
     gl.uniform1f(p.u.u_turbidity, this.turbidity);
     gl.uniform1f(p.u.u_waterLevel, this.boat.heave);
     gl.uniform1f(p.u.u_boatSpeed, this.boat.speed);
+    this.bindShadow(p, 0, SHADOW_STRENGTH);
 
     for (const mesh of [this.boatMeshes.hull, this.boatMeshes.sail]) {
       gl.bindVertexArray(mesh.vao);
@@ -778,6 +895,10 @@ export class Ocean {
     const sun = this.sunDirection();
     const sunColour = this.sunColour();
 
+    // Shadows first, outside every other target: the pass binds its own
+    // framebuffer, and both the water and the boat sample the result.
+    if (this.boat) this.renderShadowMap(sun);
+
     this.bindTarget(this.scene);
     gl.clearColor(0, 0, 0, 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -837,6 +958,9 @@ export class Ocean {
       gl.uniform1f(p.u.u_normalDetailFade, 12);
       gl.uniform1f(p.u.u_displacementFadeStart, 1800);
       gl.uniform1f(p.u.u_displacementFadeEnd, 6000);
+      // The boat's shadow on the water: the long dark stripe running away to
+      // leeward, which is the cue that puts the hull in the water rather than on it.
+      this.bindShadow(p, 6, this.boat ? SHADOW_STRENGTH : 0);
 
       gl.bindVertexArray(this.grid);
       gl.drawElements(gl.TRIANGLES, this.gridIndexCount, gl.UNSIGNED_INT, 0);

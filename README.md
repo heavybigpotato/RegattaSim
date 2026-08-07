@@ -25,6 +25,7 @@ boat sailing on it — in the native client and in the browser showcase alike.
 | **Build** | Gradle multi-module, desktop launcher, Android launcher, GitHub Actions producing an installable APK on every push. |
 | **Boat** | Hull with a real turn of the bilge and a chine that hardens aft, crowned deck, toerail, coachroof with windows, recessed cockpit, keel with a bulb, rudder, tapered mast, spreaders, standing rigging, bowsprit, stanchions, lifelines, pushpit and winches — 3,200 triangles, generated from curves in `core` rather than loaded as an asset. Normals are averaged per smoothing group, so the chine and the sheer stay hard while the topsides shade smoothly. |
 | **Boat shading** | The same GGX/Smith/Schlick model the ocean uses, against the same analytic sky, with the sea substituted below the horizon. Gelcoat, non-skid, carbon, sailcloth, antifouling, rigging wire and smoked glass are separate materials; the topsides go dark and mirror-smooth where they are wet and carry a broken foam collar at the bow and the quarter when she is moving. |
+| **Shadows** | One orthographic shadow map, 1024², fitted to the boat and re-fitted every frame to the sun's elevation — because a 19 m rig throws its shadow 37 m at a 26° sun and twice that an hour later, and a box sized for the boat cuts the shadow off in a straight line across the sea. Sampled by the hull (the sails shade the deck) and by the water (the rig lays a stripe to leeward). |
 | **Web showcase** | The same ocean and the same boat in WebGL 2, from the same shader sources and the same geometry, so both can be seen on a device that cannot install an APK. |
 
 ## Everything is free
@@ -202,13 +203,18 @@ nothing about frame rate. The 60 fps targets in the performance table are budget
 not measurements. **The Phase 1 acceptance criterion of 60 fps on a target device
 is not yet demonstrated**, and cannot be until the APK runs on a phone.
 
-**The boat is not photoreal and is not claimed to be.** There are no shadows: the
-sails do not shadow the deck and the hull does not shadow the water, which is the
-largest remaining gap and the reason it still reads as an object placed on the sea
-rather than in it. There are no textures — every material is procedural — no crew,
-no wake or bow wave in the water itself, and the sails hold a trimmed shape
-instead of flogging or luffing. It reads as the right kind of boat at
-chase-camera distance and would not survive a close-up. Real assets are Phase 6.
+**The boat is not photoreal and is not claimed to be.** There are no textures —
+every material is procedural — no crew, no wake or bow wave in the *water* (the
+foam collar is painted on the hull, not thrown into the sea), and the sails hold a
+trimmed shape instead of flogging or luffing. The shadow is a single cascade with
+no contact hardening, so it is uniformly soft whether it falls on the deck or
+thirty metres to leeward. It reads as the right kind of boat at chase-camera
+distance and would not survive a close-up. Real assets are Phase 6.
+
+**Shadow cost is not measured.** The map is a second draw of the boat at 1024²
+plus a nine-tap filter on every water pixel whose light-space depth lands inside
+the box. Both are cheap on a desktop GPU and neither has been timed on a phone,
+which is the only measurement that would mean anything.
 
 **Screenshot realism is not claimed.** The brief's acceptance test is that a still
 frame passes for a photograph for two seconds. That is a judgement a person makes,

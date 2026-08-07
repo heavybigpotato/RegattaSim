@@ -7,6 +7,7 @@ import com.badlogic.gdx.graphics.glutils.ShaderProgram;
 import com.badlogic.gdx.utils.Disposable;
 import com.bluemeridian.core.ocean.SeaState;
 import com.bluemeridian.render.gl.ShaderSources;
+import com.bluemeridian.render.boat.BoatRenderer;
 import com.bluemeridian.render.sky.SunLight;
 
 /**
@@ -17,6 +18,10 @@ import com.bluemeridian.render.sky.SunLight;
  * the act of putting them on screen.
  */
 public final class OceanRenderer implements Disposable {
+
+    /** Placeholder light matrix for when nothing is casting. */
+    private static final com.badlogic.gdx.math.Matrix4 IDENTITY =
+            new com.badlogic.gdx.math.Matrix4();
 
     private final ShaderProgram program;
     private final ProjectedGrid grid;
@@ -92,6 +97,16 @@ public final class OceanRenderer implements Disposable {
      */
     public void render(Camera camera, GpuOceanSimulation simulation, SunLight sun, SeaState sea,
             float maximumDisplacement) {
+        render(camera, simulation, sun, sea, maximumDisplacement, null);
+    }
+
+    /**
+     * Renders the surface, with a shadow caster.
+     *
+     * @param shadow the boat casting onto the water, or null for an empty sea
+     */
+    public void render(Camera camera, GpuOceanSimulation simulation, SunLight sun, SeaState sea,
+            float maximumDisplacement, BoatRenderer shadow) {
         if (!grid.update(camera, maximumDisplacement)) {
             return;
         }
@@ -146,6 +161,19 @@ public final class OceanRenderer implements Disposable {
         program.setUniformf("u_normalDetailFade", normalDetailFade);
         program.setUniformf("u_displacementFadeStart", displacementFadeStart);
         program.setUniformf("u_displacementFadeEnd", displacementFadeEnd);
+
+        // The boat's shadow on the water. With no boat the strength is zero and the
+        // lookup returns before it samples, but a sampler still has to be bound to
+        // something valid - hence the fallback rather than leaving unit 6 dangling.
+        if (shadow != null) {
+            shadow.bindShadow(program, 6, BoatRenderer.SHADOW_STRENGTH);
+        } else {
+            simulation.cascade(0).displacement().texture().bind(6);
+            program.setUniformi("u_shadowMap", 6);
+            program.setUniformMatrix("u_lightViewProjection", IDENTITY);
+            program.setUniformf("u_shadowTexel", 1f / 1024f);
+            program.setUniformf("u_shadowStrength", 0f);
+        }
 
         grid.render(program);
 

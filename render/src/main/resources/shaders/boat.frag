@@ -14,6 +14,7 @@
 
 #pragma include "lib_sky.glsl"
 #pragma include "lib_noise.glsl"
+#pragma include "lib_shadow.glsl"
 
 in vec3 v_worldPosition;
 in vec3 v_normal;
@@ -253,11 +254,16 @@ void main() {
     float d = distributionGGX(nDotH, surface.roughness);
     float vis = visibilitySmith(nDotV, nDotL, surface.roughness);
     float f = fresnelSchlick(vDotH, surface.f0);
-    vec3 specular = u_sunColour * (d * vis * f) * nDotL;
+    // Self-shadowing: the sails shade the deck, the coachroof shades the cockpit,
+    // the boom lays a line across the sidedeck. Without it every surface facing the
+    // sun is lit whether anything is between it and the sun or not, and the boat
+    // reads as a collection of parts rather than one object.
+    float sunlit = sunVisibility(v_worldPosition, nDotL);
+    vec3 specular = u_sunColour * (d * vis * f) * nDotL * sunlit;
 
     // Metals have no diffuse term; the f0 is what distinguishes them.
     float diffuseWeight = (1.0 - f) * (1.0 - smoothstep(0.2, 0.6, surface.f0));
-    vec3 diffuse = surface.albedo * u_sunColour * nDotL * diffuseWeight * 0.318;
+    vec3 diffuse = surface.albedo * u_sunColour * nDotL * diffuseWeight * 0.318 * sunlit;
 
     // --- ambient ------------------------------------------------------------
     // Hemisphere lookup rather than a constant: the sky above and the sea below are
@@ -287,6 +293,8 @@ void main() {
         // else. A broad one lights the whole sail from the back at once, which is
         // what made it look like paper.
         float through = max(dot(-n, u_sunDirection), 0.0);
+        // Not shadowed by the boat's own geometry: this is light arriving at the
+        // *back* of the sail, so what matters is whether the far face is lit.
         vec3 transmitted = u_sunColour * pow(through, 3.5) * surface.translucency;
         // Warmed on the way through, as light always is through cloth.
         colour += surface.albedo * transmitted * vec3(1.08, 1.0, 0.90);
