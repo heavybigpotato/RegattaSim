@@ -257,11 +257,103 @@ function dataTexture(gl, width, height, data) {
  * demanding the other is the difference between an ocean and an error page - which
  * is exactly what this build did, on the only kind of device it was written for.
  */
+/**
+ * Whether this context will actually render to a texture of the given format, by
+ * trying it rather than by asking.
+ *
+ * getExtension is a question about what the driver advertises. This is the thing
+ * the renderer actually needs, and the two have been seen to disagree: an iPhone
+ * refused to start with "neither EXT_color_buffer_float nor
+ * EXT_color_buffer_half_float is available" while the diagnostic panel on the same
+ * page reported both as present. Whatever the cause of that, an allocation that
+ * comes back complete is the authority - the extension list is hearsay about it.
+ */
+function canRender(gl, internalFormat) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat, 4, 4, 0, gl.RGBA, gl.FLOAT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.deleteFramebuffer(fbo);
+  gl.deleteTexture(tex);
+  return complete;
+}
+
 function detectFormats(gl) {
-  const float32 = !!gl.getExtension('EXT_color_buffer_float');
-  const half = float32 || !!gl.getExtension('EXT_color_buffer_half_float');
+  // Ask first, because the answer is usually right and enabling the extension is
+  // what makes the format renderable in the first place. Fall through to trying it
+  // only when the answer is no, so a driver that misreports itself costs a four
+  // pixel allocation rather than the whole page.
+  const float32 = !!gl.getExtension('EXT_color_buffer_float') || canRender(gl, gl.RGBA32F);
+  const half = float32
+    || !!gl.getExtension('EXT_color_buffer_half_float')
+    || canRender(gl, gl.RGBA16F);
   return { float32, half };
 }
+
+/**
+ * A WebGL 2 context that can render the ocean, retrying once on a fresh canvas.
+ *
+ * A phone reported neither float extension while the failure page's own diagnostic
+ * - which builds a throwaway canvas with default attributes - reported both on the
+ * same device, seconds apart. A context belongs to its canvas for the life of the
+ * element and getContext hands back the one it already made, attributes and all, so
+ * the only way to ask a second time is with a new element. Asking for nothing in
+ * particular the second time is deliberate: powerPreference buys nothing on a phone
+ * with one GPU, and the attributes are the only difference between the context that
+ * failed and the one that worked.
+ */
+function acquireContext(canvas) {
+  const attributes = [
+    { antialias: false, alpha: false, powerPreference: 'high-performance' },
+    {},
+  ];
+  let best = null;
+  for (let attempt = 0; attempt < attributes.length; attempt++) {
+    if (attempt > 0) {
+      // A detached canvas has nothing to be replaced in, so one attempt is all
+      // there is; cloneNode(false) keeps the id and classes the page styles it by.
+      if (!canvas.parentNode) break;
+      const replacement = canvas.cloneNode(false);
+      canvas.replaceWith(replacement);
+      canvas = replacement;
+    }
+    const gl = canvas.getContext('webgl2', attributes[attempt]);
+    if (!gl || gl.isContextLost()) continue;
+    const formats = detectFormats(gl);
+    best = { gl, canvas, formats };
+    if (formats.half) break;
+  }
+  return best;
+}
+
+/**
+ * Build marker, shown on the failure page.
+ *
+ * Bumped whenever something here changes that a phone would experience. The only
+ * feedback channel for this page is a screenshot from someone else's device, and
+ * without a version in the frame there is no way to tell a fix that did not work
+ * from a fix that was never fetched - a browser cache and a broken build look
+ * exactly alike.
+ */
+export const BUILD = '2026-08-07.5';
+
+/** Starting ceiling on the scene target, in pixels. */
+const PIXEL_BUDGET = 1.6e6;
+
+/**
+ * Floor for that ceiling. Below this the picture is too coarse to be worth showing
+ * and the device is not going to run this renderer at all, so the allocation
+ * failure is reported rather than shrunk away from any further.
+ */
+const MINIMUM_PIXEL_BUDGET = 1.2e5;
 
 /** Everything worth knowing when the page cannot start, for the failure message. */
 export function describeContext(canvas) {
@@ -275,11 +367,21 @@ export function describeContext(canvas) {
     ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL)
     : gl.getParameter(gl.RENDERER);
   const has = (name) => (gl.getExtension(name) ? 'yes' : 'no');
+  const lost = gl.isContextLost();
+  // What the driver advertises and what it will actually do are separate questions,
+  // and a report that only answered the first one sent us chasing an extension that
+  // was present all along. The renderable lines are the ones that decide whether
+  // this page can run; a lost context answers no to everything, hence the flag.
+  const renderable = (format) => (lost ? 'n/a' : (canRender(gl, format) ? 'yes' : 'no'));
   return [
+    `build: ${BUILD}`,
     `renderer: ${renderer}`,
+    `context lost: ${lost ? 'yes' : 'no'}`,
     `EXT_color_buffer_float: ${has('EXT_color_buffer_float')}`,
     `EXT_color_buffer_half_float: ${has('EXT_color_buffer_half_float')}`,
     `OES_texture_float_linear: ${has('OES_texture_float_linear')}`,
+    `RGBA32F renderable: ${renderable(gl.RGBA32F)}`,
+    `RGBA16F renderable: ${renderable(gl.RGBA16F)}`,
     `max texture: ${gl.getParameter(gl.MAX_TEXTURE_SIZE)}`,
     `max renderbuffer: ${gl.getParameter(gl.MAX_RENDERBUFFER_SIZE)}`,
     `drawing buffer: ${gl.drawingBufferWidth}x${gl.drawingBufferHeight}`,
@@ -363,18 +465,18 @@ function target(gl, width, height, { float32 = false, tiling = false, depth = fa
 
 export class Ocean {
   constructor(canvas, options = {}) {
-    const gl = canvas.getContext('webgl2', {
-      antialias: false,
-      alpha: false,
-      powerPreference: 'high-performance',
-    });
-    if (!gl) throw new Error('WebGL 2 is not available in this browser.');
+    const acquired = acquireContext(canvas);
+    if (!acquired) throw new Error('WebGL 2 is not available in this browser.');
+    // acquireContext may have swapped the element to get a usable context, so the
+    // canvas the page handed in is not necessarily the one being drawn on.
+    const gl = acquired.gl;
+    canvas = acquired.canvas;
 
     // What the device will render into, rather than what would be convenient.
     // EXT_color_buffer_float is the nice one and a great many iPhones do not have
     // it; EXT_color_buffer_half_float is enough to run everything here, at the cost
     // of doing the transform in half precision.
-    const formats = detectFormats(gl);
+    const formats = acquired.formats;
     if (!formats.half) {
       throw new Error(
         'this device cannot render to a floating point texture, which the wave '
@@ -404,6 +506,11 @@ export class Ocean {
 
     this.time = options.time ?? 0;
     this.exposure = 1;
+    /**
+     * Ceiling on the scene target, in pixels. Lowered - and left lowered - if the
+     * device turns out not to have the memory for it. See resize().
+     */
+    this.pixelBudget = options.pixelBudget ?? PIXEL_BUDGET;
     /** Attach a Boat from sailing.js to switch to chase view and draw a hull. */
     this.boat = null;
     /** Extra yaw applied to the chase camera, so the player can look around. */
@@ -499,7 +606,25 @@ export class Ocean {
       sail: this.uploadMesh(buildSails(this.hullGeometry, 0.35)),
     };
     this.sailSheetAngle = 0.35;
-    this.shadowMap = target(gl, SHADOW_SIZE, SHADOW_SIZE, { depth: true });
+
+    // A shadow map is a luxury, and a megapixel of it is the single largest thing
+    // this renderer asks a device for after the scene target. On a phone short of
+    // memory the request is refused, and taking that as fatal would trade the whole
+    // ocean for a shadow. Halve it instead, and sail without one rather than not at
+    // all - bindShadow already has a path for that, because the sun going below the
+    // horizon needs the same thing.
+    this.shadowMap = null;
+    this.shadowSize = 0;
+    for (let size = SHADOW_SIZE; size >= SHADOW_SIZE / 4; size /= 2) {
+      try {
+        this.shadowMap = target(gl, size, size, { depth: true });
+        this.shadowSize = size;
+        break;
+      } catch (error) {
+        // Try the next size down; the last failure falls out of the loop with no
+        // shadow map, which is a picture without shadows rather than no picture.
+      }
+    }
     this.lightViewProjection = mat4Identity();
   }
 
@@ -513,6 +638,9 @@ export class Ocean {
   renderShadowMap(sun) {
     const gl = this.gl;
     const b = this.boat;
+    // No map means the device would not give us one; bindShadow turns the lookup
+    // off to match.
+    if (!this.shadowMap) return;
     // The box has to hold the boat *and* the shadow it throws, and how far that
     // reaches depends entirely on how low the sun is: a rig 19 m tall lays its shadow
     // 37 m away at a 26 degree sun and twice that an hour later. Sizing the box for
@@ -543,7 +671,7 @@ export class Ocean {
     const view = mat4LookAt(eye, dir, up);
     const projection = mat4Ortho(extent, 0.1, extent * 5);
     this.lightViewProjection = mat4Multiply(projection, view);
-    this.shadowTexelSize = (2 * extent) / SHADOW_SIZE;
+    this.shadowTexelSize = (2 * extent) / this.shadowSize;
 
     this.bindTarget(this.shadowMap);
     // Cleared to 1, which reads as "nothing between here and the sun".
@@ -568,6 +696,7 @@ export class Ocean {
   /** Binds the shadow map and its matrix on a program that includes lib_shadow. */
   bindShadow(p, unit, strength) {
     const gl = this.gl;
+    if (!this.shadowMap) strength = 0;
     if (strength > 0) {
       this.bindTexture(unit, this.shadowMap.tex, p, 'u_shadowMap');
     } else {
@@ -576,7 +705,7 @@ export class Ocean {
       this.bindTexture(unit, this.cascades[0].displacement.tex, p, 'u_shadowMap');
     }
     gl.uniformMatrix4fv(p.u.u_lightViewProjection, false, this.lightViewProjection);
-    gl.uniform1f(p.u.u_shadowTexel, 1 / SHADOW_SIZE);
+    gl.uniform1f(p.u.u_shadowTexel, 1 / (this.shadowSize || SHADOW_SIZE));
     gl.uniform1f(p.u.u_shadowStrength, strength);
   }
 
@@ -709,32 +838,68 @@ export class Ocean {
     this.exposure = snap ? targetExposure : this.exposure + (targetExposure - this.exposure) * 0.05;
   }
 
+  /**
+   * Backing store size for a given pixel budget.
+   *
+   * A modern phone reports a device pixel ratio of 3, and the ocean is fill-rate
+   * bound, so rendering at native density costs nine times the pixels for detail
+   * the display cannot resolve on water. There is a ceiling on the total as well as
+   * the density: a large phone at ratio 2 is over two million pixels of half-float
+   * scene target and depth, which is both the fill rate this renderer is short of
+   * and the memory a struggling device has least of. Scaled rather than clamped, so
+   * the aspect ratio is untouched.
+   */
+  backingStore(budget) {
+    let ratio = Math.min(window.devicePixelRatio || 1, 2);
+    const wanted = this.canvas.clientWidth * this.canvas.clientHeight * ratio * ratio;
+    if (wanted > budget) ratio *= Math.sqrt(budget / wanted);
+    return [
+      Math.max(1, Math.floor(this.canvas.clientWidth * ratio)),
+      Math.max(1, Math.floor(this.canvas.clientHeight * ratio)),
+    ];
+  }
+
   resize() {
     const gl = this.gl;
-    // Cap the backing store: a modern phone reports a device pixel ratio of 3,
-    // and the ocean is fill-rate bound, so rendering at native density costs
-    // nine times the pixels for detail the display cannot resolve on water.
-    let ratio = Math.min(window.devicePixelRatio || 1, 2);
-    // And a ceiling on the total, not just the density. A large phone at ratio 2 is
-    // over two million pixels of half-float scene target, bloom chain and depth,
-    // which is both the fill rate this renderer is short of and the memory a device
-    // that is already struggling has least of. Scaled down rather than clamped, so
-    // the aspect ratio is untouched.
-    const budget = 1.6e6;
-    const wanted = this.canvas.clientWidth * this.canvas.clientHeight * ratio * ratio;
-    if (wanted > budget) {
-      ratio *= Math.sqrt(budget / wanted);
-    }
-    const width = Math.max(1, Math.floor(this.canvas.clientWidth * ratio));
-    const height = Math.max(1, Math.floor(this.canvas.clientHeight * ratio));
+    let [width, height] = this.backingStore(this.pixelBudget);
     if (this.canvas.width === width && this.canvas.height === height && this.scene) return;
-    this.canvas.width = width;
-    this.canvas.height = height;
+
     if (this.scene) {
       gl.deleteTexture(this.scene.tex);
       gl.deleteFramebuffer(this.scene.fbo);
+      // The depth renderbuffer too. Leaving it leaked a couple of megabytes every
+      // time the canvas changed size, and on a phone the address bar collapsing and
+      // reappearing does that repeatedly - so the page ran for a few seconds, ate
+      // its memory budget, and died with an incomplete framebuffer or a lost
+      // context. That is the whole of the "it plays and then crashes" report.
+      if (this.scene.depthBuffer) gl.deleteRenderbuffer(this.scene.depthBuffer);
+      this.scene = null;
     }
-    this.scene = target(gl, width, height, { depth: true });
+
+    // Give up resolution before giving up entirely. A device short of memory - a
+    // phone with a dozen other tabs open, which is the normal state of a phone -
+    // refuses the allocation at full size and takes it at half, so the choice here
+    // is between a smaller ocean and no ocean. The reduced budget is kept rather
+    // than retried at full size on the next resize: whatever made the memory scarce
+    // is unlikely to have gone away, and thrashing between the two would be worse
+    // than either.
+    for (;;) {
+      this.canvas.width = width;
+      this.canvas.height = height;
+      try {
+        this.scene = target(gl, width, height, { depth: true });
+        return;
+      } catch (error) {
+        if (this.pixelBudget <= MINIMUM_PIXEL_BUDGET) throw error;
+        // Measured against what was just refused, not against the budget. The
+        // budget is only a ceiling, so the failure can happen well under it - and
+        // halving a ceiling nothing was touching would retry at exactly the size
+        // that just failed, forever.
+        this.pixelBudget = Math.max(
+          MINIMUM_PIXEL_BUDGET, Math.min(this.pixelBudget, width * height) * 0.5);
+        [width, height] = this.backingStore(this.pixelBudget);
+      }
+    }
   }
 
   drawQuad(p) {
@@ -881,8 +1046,11 @@ export class Ocean {
                              Math.cos(b.heading - this.smoothedHeading));
     this.smoothedHeading += error * 0.04;
 
-    const back = this.chaseDistance ?? 26;
-    const height = this.chaseHeight ?? 7.5;
+    // Stand further off in a big sea. At Hs 12 m a boat 26 m away is behind the
+    // next crest half the time, and the frame is all water.
+    const seaScale = 1 + 0.55 * Math.max(0, this.sea.significantWaveHeight - 2);
+    const back = (this.chaseDistance ?? 26) + 0.9 * seaScale;
+    const height = (this.chaseHeight ?? 7.5) + 0.7 * seaScale;
     // Off the quarter rather than dead astern. From directly behind, a 12 m hull
     // foreshortens into a wedge and the sail is edge-on; a quarter view shows the
     // length of one and the camber of the other, which is why every photograph of
@@ -893,6 +1061,15 @@ export class Ocean {
       b.heave + height,
       b.z - Math.sin(yaw) * back,
     ];
+
+    // Keep the camera out of the water. It follows the boat's heave, and in a big
+    // sea the boat can be deep in a trough while the crest behind it - which is
+    // where the camera is - stands several metres higher. The eye then ends up
+    // under the surface, looking up through it at the bottom of the hull, which is
+    // exactly as broken as it sounds and is what a player actually sees first.
+    const surfaceAtEye = this.surfaceHeightAt(eye[0], eye[2]);
+    eye[1] = Math.max(eye[1], surfaceAtEye + 2.0);
+
     const target = [b.x, b.heave + 3.5, b.z];
     const dir = normalise([target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]]);
 

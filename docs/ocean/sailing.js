@@ -139,6 +139,27 @@ export const CLASS40 = {
 const HEEL_TIME_CONSTANT = 1.6;
 
 /**
+ * Time constant for pitch and roll to follow the wave slope, seconds.
+ *
+ * A hull does not snap to the surface under it. A 40 footer has a natural roll
+ * period of three or four seconds and a pitch period not far off, so it lags the
+ * slope it is sitting on and never quite reaches it before the wave has moved on.
+ * Reading the plane fit straight out - which this did - is fine in a two metre sea
+ * and violent in a twelve metre one: the boat snaps through forty degrees between
+ * frames and reads as broken rather than as pressed.
+ */
+const ATTITUDE_TIME_CONSTANT = 0.7;
+
+/**
+ * Beyond this the boat is not sailing, it is capsizing, and that is Phase 5's.
+ * Until then the angle is held here rather than allowed to run to whatever a steep
+ * wave face asks for.
+ */
+const MAXIMUM_ATTITUDE = (65 * Math.PI) / 180;
+
+const clampAttitude = (a) => Math.max(-MAXIMUM_ATTITUDE, Math.min(MAXIMUM_ATTITUDE, a));
+
+/**
  * A hull sailing on a wave surface, matching SailingBoat.java.
  *
  * Speed comes from the polar; the rest is what makes it feel like a boat rather
@@ -180,7 +201,7 @@ export class Boat {
       this.step(trueWindSpeed, windToward);
       this.accumulator -= STEP;
     }
-    this.readAttitude(heightAt);
+    this.readAttitude(heightAt, Math.min(deltaTime, 0.25));
   }
 
   step(trueWindSpeed, windToward) {
@@ -221,7 +242,7 @@ export class Boat {
     return -Math.sign(side) * magnitude;
   }
 
-  readAttitude(heightAt) {
+  readAttitude(heightAt, deltaTime) {
     const halfLength = this.hull.length * 0.5;
     const halfBeam = this.hull.beam * 0.5;
     const c = Math.cos(this.heading);
@@ -232,10 +253,18 @@ export class Boat {
     const starboard = heightAt(this.x + s * halfBeam, this.z - c * halfBeam);
     const port = heightAt(this.x - s * halfBeam, this.z + c * halfBeam);
 
+    // Heave is not lagged: a hull really does follow the surface up and down, and
+    // damping it would have the boat swimming through crests.
     this.heave = 0.25 * (bow + stern + starboard + port);
-    this.pitch = Math.atan2(bow - stern, this.hull.length);
+
     // The wave slope tips the boat about the angle the rig already holds it at.
-    this.roll = Math.atan2(starboard - port, this.hull.beam) + this.windHeel;
+    const targetPitch = clampAttitude(Math.atan2(bow - stern, this.hull.length));
+    const targetRoll = clampAttitude(
+      Math.atan2(starboard - port, this.hull.beam) + this.windHeel);
+
+    const rate = 1 - Math.exp(-deltaTime / ATTITUDE_TIME_CONSTANT);
+    this.pitch += (targetPitch - this.pitch) * rate;
+    this.roll += (targetRoll - this.roll) * rate;
   }
 
   get speedKnots() {
